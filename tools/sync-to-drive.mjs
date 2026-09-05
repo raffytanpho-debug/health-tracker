@@ -66,6 +66,14 @@ if (sessionArg) {
   process.exit(0);
 }
 if (!fs.existsSync(SESSION_PATH)) {
+  // Passing the id as a bare argument is the easy mistake, and the generic
+  // "no session id" message gives no hint that the flag is what is missing.
+  const bare = args.find(a => !a.startsWith('--') && /^[0-9a-fA-F-]{16,}$/.test(a));
+  if (bare) {
+    die('That looks like a session id, but it needs the --session flag:\n' +
+        '         node tools/sync-to-drive.mjs --session ' + bare.slice(0, 8) + '...\n' +
+        '       Nothing was saved.');
+  }
   die('No session id. Run:  node tools/sync-to-drive.mjs --session <id>\n' +
       '       See the SETUP block at the top of this file for where to get one.');
 }
@@ -131,13 +139,25 @@ log(`Parsed ${dates.length} day rows` + (dates.length ? ` (${dates[0]} to ${date
 if (!dates.length && !workouts.length) { log('Nothing parsed. Exiting.'); process.exit(0); }
 
 /* ── Drive ─────────────────────────────────────────────────────────────── */
+// The hardened Worker (2026-08 proxy lockdown) rejects POSTs whose Origin is
+// absent or not allowlisted, which is right for a browser but blocks this script
+// outright -- Node sends no Origin header, so /drive/token answered 403 and the
+// nightly sync could never authenticate. Declaring the app's own origin is
+// consistent with how that check is meant to work: the Worker's own notes say a
+// non-browser client can set this header anyway, so the allowlist exists to stop
+// drive-by browser abuse, with the rate limit as the real backstop. This is a
+// first-party client of that same app, not a way around the control.
+const APP_ORIGIN = 'https://raffytanpho-debug.github.io';
+
 async function accessToken() {
   const r = await fetch(WORKER_BASE + '/drive/token', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Origin': APP_ORIGIN },
     body: JSON.stringify({ session_id: SESSION })
   });
   if (!r.ok) {
     const body = await r.text();
+    if (r.status === 403) die('The Worker rejected this client (' + body.slice(0, 120) + ').\n' +
+      '       Its origin allowlist must include ' + APP_ORIGIN + '.');
     if (r.status === 401) die('Drive session rejected (' + body.slice(0, 120) + ').\n' +
       '       Reconnect Drive in the app, then re-run with --session <new id>.');
     die('Token request failed: ' + r.status + ' ' + body.slice(0, 200));

@@ -876,6 +876,8 @@ function viewSettings() {
     unitRow('Distance', 'distance', [['mi', 'mi'], ['km', 'km']]) +
     '</div>';
 
+  h += driveCard();
+
   h += '<div class="card"><div class="card-title">Import and backup</div>' +
     '<div class="srow"><div><div class="sl">Import data file</div>' +
     '<div class="sd">A health-data.json built by tools/build-fixture.mjs, or a backup exported from this app. ' +
@@ -906,6 +908,42 @@ function viewSettings() {
     'and it is not a substitute for professional medical advice.</div>';
   return h;
 }
+function driveCard() {
+  const connected = !!driveSession;
+  const last = data.sync && data.sync.lastSync;
+  const lastTxt = last ? new Date(last).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'never';
+
+  let status;
+  if (driveState === 'checking') status = '<div class="banner info">Checking Drive…</div>';
+  else if (driveState === 'error') status = '<div class="banner warn">' + esc(driveMsg) + '</div>';
+  else if (driveState === 'disconnected') status = '<div class="banner warn">' + esc(driveMsg) + '</div>';
+  else if (driveState === 'ok') status = '<div class="banner ok">Synced just now</div>';
+  else status = '';
+
+  let body = '<div class="card"><div class="card-title">Google Drive sync</div>';
+  if (status) body += status.replace('class="banner', 'style="margin:0 0 11px" class="banner');
+  body += '<div class="srow"><div><div class="sl">' + (connected ? 'Connected' : 'Not connected') + '</div>' +
+    '<div class="sd">' + (connected
+      ? 'Syncing with the "' + DATA_FOLDER + '" folder in your own Drive. Last sync: ' + esc(lastTxt) + '.'
+      : 'Connect to keep this phone and your desktop in step. The app can only see the folder it creates, never the rest of your Drive.') +
+    '</div></div></div>';
+  if (connected) {
+    body += '<button class="btn wide" onclick="driveSync(true)">Sync now</button>' +
+      '<button class="btn ghost wide" onclick="confirmDisconnect()">Disconnect</button>';
+  } else {
+    body += '<button class="btn wide" onclick="connectDrive()">Connect Google Drive</button>';
+  }
+  body += '</div>';
+  return body;
+}
+function confirmDisconnect() {
+  openModal('<h3>Disconnect Drive?</h3>' +
+    '<div class="mdsub">Your data stays on this device and the Drive copy is left untouched. ' +
+    'You can reconnect any time.</div>' +
+    '<button class="btn ghost wide" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn wide" onclick="disconnectDrive()">Disconnect</button>');
+}
+
 function unitRow(label, key, opts) {
   return '<div class="srow"><div><div class="sl">' + esc(label) + '</div></div><div class="seg">' +
     opts.map(([v, l]) => '<button class="' + (data.settings.units[key] === v ? 'on' : '') + '" ' +
@@ -956,6 +994,11 @@ function applyImport(inc) {
   saveLocal(); recompute(); render();
   toast('✅ ' + added + ' new day' + (added === 1 ? '' : 's') + (updated ? ', ' + updated + ' updated' : '') +
     ' (was ' + before.toLocaleString() + ')');
+  // An import is the one moment worth pushing immediately: it is the only time
+  // this device gains days the Drive copy has never seen.
+  if (driveSession && driveToken) {
+    drivePush().then(() => driveBackup()).catch(e => console.warn('post-import push failed', e));
+  }
 }
 
 function doExport() {
@@ -980,6 +1023,232 @@ function doWipe() {
   toast('Local data cleared');
 }
 
+/* ══ GOOGLE DRIVE SYNC ════════════════════════════════════════════════
+   Same design as the Finance Tracker (GOOGLE_DRIVE_AUTH_PLAYBOOK.md): a
+   server-side authorization-code flow with the refresh token held on the
+   Cloudflare Worker, never the GIS implicit flow, because the implicit flow is
+   what produced the endless "reconnect to Drive" prompts.
+
+   Scope is drive.file, so the app can only ever see files this same OAuth
+   client created. It cannot read the raw Health Auto Export folder, and that is
+   deliberate: the nightly sync script writes one compact health-data.json into
+   the app's own folder and the app reads that.
+
+   The session id lives in IndexedDB rather than localStorage because Safari's
+   storage eviction clears localStorage for sites not opened in a week, and
+   silently signing out is exactly the failure this flow exists to avoid. */
+const WORKER_BASE = 'https://claude-proxy.raffy-tanpho.workers.dev';
+const APP_KEY = 'health-tracker';
+const DATA_FOLDER = 'Health Tracker Data', BACKUP_FOLDER = 'backups';
+const DATA_FILE = 'health-data.json', BACKUP_KEEP = 14;
+
+let driveSession = null, driveToken = null, driveFileId = null;
+let driveState = 'idle';   // idle | checking | ok | error | disconnected
+let driveMsg = '';
+let refreshTimer = null;
+
+/* Tiny IndexedDB key/value store — just for the session id and file id. */
+function idb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('ht-kv', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function dbGet(k) {
+  try {
+    const d = await idb();
+    return await new Promise((res, rej) => {
+      const t = d.transaction('kv', 'readonly').objectStore('kv').get(k);
+      t.onsuccess = () => res(t.result == null ? null : t.result);
+      t.onerror = () => rej(t.error);
+    });
+  } catch (e) { return null; }
+}
+async function dbSet(k, v) {
+  try {
+    const d = await idb();
+    await new Promise((res, rej) => {
+      const t = d.transaction('kv', 'readwrite').objectStore('kv').put(v, k);
+      t.onsuccess = () => res(); t.onerror = () => rej(t.error);
+    });
+  } catch (e) {}
+}
+
+function setDrive(state, msg) { driveState = state; driveMsg = msg || ''; if (view === 'settings') renderView(); }
+
+async function driveTokenGet() {
+  if (!driveSession) driveSession = await dbGet('driveSession');
+  if (!driveSession) return false;
+  try {
+    const r = await fetch(WORKER_BASE + '/drive/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: driveSession })
+    });
+    if (!r.ok) {
+      // 401 means the refresh token is definitively dead (revoked, or consent
+      // expired). Anything else is transient and must NOT drop the session.
+      if (r.status === 401) { driveSession = null; driveToken = null; await dbSet('driveSession', null); setDrive('disconnected', 'Google access was revoked or expired. Reconnect to resume syncing.'); }
+      return false;
+    }
+    const j = await r.json();
+    if (!j.access_token) return false;
+    driveToken = j.access_token;
+    const ms = (j.expires_in || 3599) * 1000;
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => driveTokenGet(), Math.max(60000, ms - 120000));
+    return true;
+  } catch (e) { return false; }
+}
+
+async function driveJSON(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error('Drive ' + r.status + ' ' + (await r.text()).slice(0, 160));
+  return r.json();
+}
+function authHdr(extra) { return Object.assign({ 'Authorization': 'Bearer ' + driveToken }, extra || {}); }
+
+async function findOrCreateFolder(name, parentId) {
+  const q = encodeURIComponent("name='" + name + "' and mimeType='application/vnd.google-apps.folder' and trashed=false" + (parentId ? " and '" + parentId + "' in parents" : ''));
+  const j = await driveJSON('https://www.googleapis.com/drive/v3/files?q=' + q + '&spaces=drive&fields=files(id)', { headers: authHdr() });
+  if (j.files && j.files.length) return j.files[0].id;
+  const meta = { name, mimeType: 'application/vnd.google-apps.folder' };
+  if (parentId) meta.parents = [parentId];
+  const cj = await driveJSON('https://www.googleapis.com/drive/v3/files?fields=id',
+    { method: 'POST', headers: authHdr({ 'Content-Type': 'application/json' }), body: JSON.stringify(meta) });
+  return cj.id;
+}
+async function dataFolderId() { return findOrCreateFolder(DATA_FOLDER, null); }
+
+async function findOrCreateDataFile() {
+  const q = encodeURIComponent("name='" + DATA_FILE + "' and trashed=false");
+  const j = await driveJSON('https://www.googleapis.com/drive/v3/files?q=' + q + '&spaces=drive&fields=files(id,modifiedTime)&orderBy=modifiedTime desc', { headers: authHdr() });
+  if (j.files && j.files.length) { driveFileId = j.files[0].id; await dbSet('driveFileId', driveFileId); return; }
+  const folderId = await dataFolderId();
+  const boundary = 'ht' + Date.now();
+  const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
+    JSON.stringify({ name: DATA_FILE, parents: [folderId] }) +
+    '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + JSON.stringify(data) +
+    '\r\n--' + boundary + '--';
+  const cj = await driveJSON('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+    { method: 'POST', headers: authHdr({ 'Content-Type': 'multipart/related; boundary=' + boundary }), body });
+  driveFileId = cj.id; await dbSet('driveFileId', driveFileId);
+}
+
+async function driveLoad() {
+  if (!driveFileId) return;
+  const r = await fetch('https://www.googleapis.com/drive/v3/files/' + driveFileId + '?alt=media', { headers: authHdr() });
+  if (!r.ok) throw new Error('load failed ' + r.status);
+  const remote = await r.json();
+  // Merge rather than replace: the phone and the desktop can both hold days the
+  // other has not seen, and a blind overwrite would silently drop one of them.
+  mergeRemote(remote);
+}
+
+/** Union local and remote by date and workout id; newer row wins on a tie. */
+function mergeRemote(remote) {
+  if (!remote || !remote.daily) return { added: 0, updated: 0 };
+  let added = 0, updated = 0;
+  for (const d in remote.daily) {
+    const row = remote.daily[d], cur = data.daily[d];
+    if (!cur) { data.daily[d] = row; added++; }
+    else if ((row.u || 0) > (cur.u || 0)) { data.daily[d] = row; updated++; }
+  }
+  if (Array.isArray(remote.workouts)) {
+    const seen = new Set(data.workouts.map(w => w.id));
+    for (const w of remote.workouts) if (w && w.id && !seen.has(w.id)) { data.workouts.push(w); seen.add(w.id); }
+  }
+  if (remote.settings && (remote.settings.updatedAt || 0) > (data.settings.updatedAt || 0)) {
+    data.settings = Object.assign({}, data.settings, remote.settings);
+  }
+  saveLocal(); recompute();
+  return { added, updated };
+}
+
+async function drivePush() {
+  if (!driveFileId || !driveToken) return false;
+  const r = await fetch('https://www.googleapis.com/upload/drive/v3/files/' + driveFileId + '?uploadType=media',
+    { method: 'PATCH', headers: authHdr({ 'Content-Type': 'application/json' }), body: JSON.stringify(data) });
+  if (!r.ok) throw new Error('push failed ' + r.status);
+  data.sync = Object.assign({}, data.sync, { lastPush: Date.now() });
+  saveLocal();
+  return true;
+}
+
+/** One rolling backup per day, newest 14 kept. Cheap insurance: the June 2026
+ *  Finance Tracker delete incident is why this exists at all. */
+async function driveBackup() {
+  try {
+    const folderId = await dataFolderId();
+    const bId = await findOrCreateFolder(BACKUP_FOLDER, folderId);
+    const name = 'health-data-backup-' + todayISO() + '.json';
+    const q = encodeURIComponent("name='" + name + "' and '" + bId + "' in parents and trashed=false");
+    const ex = await driveJSON('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id)', { headers: authHdr() });
+    if (ex.files && ex.files.length) return; // already backed up today
+    const boundary = 'htb' + Date.now();
+    const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
+      JSON.stringify({ name, parents: [bId] }) +
+      '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + JSON.stringify(data) +
+      '\r\n--' + boundary + '--';
+    await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+      { method: 'POST', headers: authHdr({ 'Content-Type': 'multipart/related; boundary=' + boundary }), body });
+    // prune
+    const lq = encodeURIComponent("name contains 'health-data-backup-' and '" + bId + "' in parents and trashed=false");
+    const lj = await driveJSON('https://www.googleapis.com/drive/v3/files?q=' + lq + '&fields=files(id,name)&orderBy=name desc', { headers: authHdr() });
+    for (const f of (lj.files || []).slice(BACKUP_KEEP)) {
+      await fetch('https://www.googleapis.com/drive/v3/files/' + f.id, {
+        method: 'PATCH', headers: authHdr({ 'Content-Type': 'application/json' }), body: JSON.stringify({ trashed: true })
+      });
+    }
+  } catch (e) { console.warn('backup skipped', e); }
+}
+
+function connectDrive() {
+  toast('Redirecting to Google…');
+  location.href = WORKER_BASE + '/drive/start?app=' + APP_KEY;
+}
+
+/** Called at startup (background, never blocking first paint) and by Sync now. */
+async function driveSync(interactive) {
+  const m = location.hash.match(/drive_session=([^&]+)/);
+  if (m) {
+    driveSession = decodeURIComponent(m[1]);
+    await dbSet('driveSession', driveSession);
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+  driveSession = driveSession || await dbGet('driveSession');
+  if (!driveSession) { setDrive('idle'); return; }
+
+  setDrive('checking', 'Checking Drive…');
+  const ok = await driveTokenGet();
+  if (!ok) { if (driveState !== 'disconnected') setDrive('error', 'Could not reach Drive. Your data is safe on this device; it will retry.'); return; }
+
+  try {
+    driveFileId = driveFileId || await dbGet('driveFileId');
+    if (!driveFileId) await findOrCreateDataFile();
+    const before = Object.keys(data.daily).length;
+    await driveLoad();
+    const after = Object.keys(data.daily).length;
+    await drivePush();
+    await driveBackup();
+    data.sync = Object.assign({}, data.sync, { lastSync: Date.now() });
+    saveLocal();
+    setDrive('ok', 'Synced');
+    render();
+    if (interactive) toast('✅ Synced' + (after > before ? ' — ' + (after - before) + ' new days from Drive' : ''));
+  } catch (e) {
+    console.error(e);
+    setDrive('error', 'Sync failed: ' + e.message);
+    if (interactive) toast('⚠️ Sync failed — your data is safe on this device');
+  }
+}
+async function disconnectDrive() {
+  driveSession = null; driveToken = null; driveFileId = null;
+  await dbSet('driveSession', null); await dbSet('driveFileId', null);
+  setDrive('idle'); closeModal(); toast('Disconnected from Drive');
+}
+
 /* ── Modal / toast ───────────────────────────────────────────────────── */
 function openModal(html) { $('MD').innerHTML = html; $('MO').classList.remove('hidden'); }
 function closeModal() { $('MO').classList.add('hidden'); }
@@ -994,7 +1263,11 @@ function toast(msg) {
 function init() {
   loadLocal();
   recompute();
-  render();
+  render();                 // paint from localStorage first — never wait on the
+                            // network for the first frame (the load-architecture
+                            // fix that took the other two trackers from a 20-30s
+                            // cold start to instant)
+  driveSync(false);         // then reconcile with Drive in the background
   // The stale-while-revalidate worker is what makes the deployed app open
   // instantly, but on localhost it serves yesterday's shell and every edit looks
   // like it did nothing. Register it only where it earns its keep.

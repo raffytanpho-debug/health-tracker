@@ -12,6 +12,7 @@ records/
 meals/
 *-backup-*.json
 .drive-session*
+.sync-state.json
 secrets*
 *SECRET*
 

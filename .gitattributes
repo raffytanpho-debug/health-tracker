@@ -1,0 +1,6 @@
+# Keep line endings stable across the Windows working copy and GitHub Pages.
+# Without this a whole-file CRLF flip shows up as a total rewrite in every diff
+# and makes a real change impossible to review.
+* text=auto eol=lf
+*.png binary
+*.ps1 text eol=crlf

@@ -1,0 +1,23 @@
+# ── PRIVATE HEALTH DATA — NEVER COMMIT ────────────────────────────────
+# This repo is deployed to GitHub Pages and is public. The app ships as
+# code only; every byte of Raffy's health data stays on his devices, in
+# his own Google Drive, and in localStorage. Nothing here.
+fixture/
+*.csv
+health-data*.json
+daily_summary*.csv
+advisor_brief.json
+labs.csv
+records/
+meals/
+*-backup-*.json
+.drive-session*
+secrets*
+*SECRET*
+
+# ── build noise ───────────────────────────────────────────────────────
+node_modules/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log

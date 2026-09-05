@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Health Tracker</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#3a7d6e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Health">
+<meta name="robots" content="noindex, nofollow">
+<link rel="apple-touch-icon" href="icon/apple-touch-icon-180.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon/icon-512.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="engine.js"></script>
+<style>
+/* ── Palette ───────────────────────────────────────────────────────────
+   Deliberately calm and deliberately NOT the Finance Tracker's dark purple:
+   these two apps sit next to each other on the home screen and must never be
+   confused. The research behind this project (03 ChatGPT Research) is explicit
+   that a health app earns trust by being quiet: neutral by default, green means
+   "stable", and red is reserved for something genuinely worth acting on. */
+:root{
+  --bg:#eef1f4; --card:#ffffff; --card2:#f6f8fa;
+  --ink:#1c2530; --ink2:#37424f; --muted:#6b7787; --line:#e2e7ec;
+  --accent:#3a7d6e; --accent-deep:#2a5f54; --accent-soft:#e6f0ed;
+  --blue:#4a7fb5; --blue-soft:#e8eff7;
+  --warm:#c98a3c; --warm-soft:#f8efe1;
+  --alert:#b8514a; --alert-soft:#f7e8e7;
+  --band:#dfe6ec; --bandfill:#a9cfc4;
+  --nav-h:62px; --r:15px; --rs:10px;
+  --shadow:0 1px 2px rgba(28,37,48,.05), 0 1px 8px rgba(28,37,48,.04);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#12171c; --card:#1a2128; --card2:#212a32;
+    --ink:#e8edf2; --ink2:#c4ced8; --muted:#8d9aa8; --line:#28323b;
+    --accent:#63a996; --accent-deep:#7cbfab; --accent-soft:#1e2f2b;
+    --blue:#7aa9d8; --blue-soft:#1b2733;
+    --warm:#d9a760; --warm-soft:#2e2718;
+    --alert:#d97b73; --alert-soft:#2e1e1d;
+    --band:#2a343d; --bandfill:#3d6b60;
+    --shadow:0 1px 2px rgba(0,0,0,.25), 0 1px 8px rgba(0,0,0,.18);
+  }
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px;line-height:1.45;overscroll-behavior:none;
+  -webkit-font-smoothing:antialiased}
+#app{max-width:440px;margin:0 auto;height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+#header{background:linear-gradient(135deg,var(--accent-deep) 0%,var(--accent) 100%);
+  color:#fff;padding:15px 18px 16px;flex-shrink:0}
+.hdr-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.hdr-lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:1.3px;font-weight:700;color:rgba(255,255,255,.62)}
+.hdr-main{font-size:27px;font-weight:800;letter-spacing:-.7px;margin:2px 0 5px}
+.hdr-sub{font-size:12.5px;color:rgba(255,255,255,.8);line-height:1.4}
+.hdr-pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.hpill{border-radius:20px;padding:3px 10px;font-size:10.5px;font-weight:700;
+  background:rgba(255,255,255,.16);color:rgba(255,255,255,.92);letter-spacing:.2px}
+
+/* ── Layout ─────────────────────────────────────────────────────────── */
+#content{flex:1;overflow-y:auto;padding:13px 0 calc(var(--nav-h) + 18px);-webkit-overflow-scrolling:touch}
+#nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:440px;
+  height:var(--nav-h);background:var(--card);border-top:1px solid var(--line);display:flex;z-index:100;
+  padding-bottom:env(safe-area-inset-bottom)}
+.nb{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  cursor:pointer;color:var(--muted);border:none;background:none;font-size:9px;font-weight:700;
+  letter-spacing:.5px;text-transform:uppercase;transition:color .18s;padding:0;font-family:inherit}
+.nb.active{color:var(--accent)}
+.ni{font-size:18px;line-height:1}
+/* Keyboard focus stays visible, but a tap must not leave a focus box behind on
+   the nav — on iOS that ring persists and reads as a second "active" tab. */
+button:focus{outline:none}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+
+/* ── Cards ──────────────────────────────────────────────────────────── */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:15px;margin:0 13px 11px;box-shadow:var(--shadow)}
+.card-title{font-size:10.5px;text-transform:uppercase;letter-spacing:1.1px;color:var(--muted);
+  font-weight:700;margin-bottom:12px}
+.section-h{font-size:11px;text-transform:uppercase;letter-spacing:1.1px;color:var(--muted);
+  font-weight:700;margin:16px 13px 8px}
+
+/* ── Readiness ──────────────────────────────────────────────────────── */
+.ready-wrap{display:flex;align-items:center;gap:16px}
+.ring{position:relative;flex-shrink:0;width:104px;height:104px}
+.ring svg{transform:rotate(-90deg)}
+.ring-val{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ring-num{font-size:29px;font-weight:800;letter-spacing:-1px;line-height:1}
+.ring-cap{font-size:9.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);font-weight:700;margin-top:3px}
+.ready-txt{flex:1;min-width:0}
+.state{font-size:19px;font-weight:750;letter-spacing:-.3px;margin-bottom:3px}
+.state.ready{color:var(--accent)} .state.steady{color:var(--blue)} .state.compromised{color:var(--warm)}
+.ready-why{font-size:12.5px;color:var(--muted);line-height:1.5}
+.override-box{margin-top:12px;padding:11px 12px;background:var(--warm-soft);border-radius:var(--rs);
+  border-left:3px solid var(--warm)}
+.override-box .ob-h{font-size:11.5px;font-weight:750;color:var(--warm);margin-bottom:4px}
+.override-box .ob-b{font-size:12.5px;color:var(--ink2);line-height:1.5}
+
+/* ── Vitals ─────────────────────────────────────────────────────────── */
+.vital{padding:13px 0;border-bottom:1px solid var(--line)}
+.vital:last-child{border-bottom:none;padding-bottom:0}
+.vital:first-child{padding-top:0}
+.v-top{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:7px}
+.v-name{font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.v-val{font-size:20px;font-weight:750;letter-spacing:-.4px}
+.v-unit{font-size:11.5px;color:var(--muted);font-weight:600;margin-left:2px}
+.v-bar{position:relative;height:5px;background:var(--band);border-radius:3px;margin:8px 0 7px}
+.v-band{position:absolute;top:0;bottom:0;background:var(--bandfill);border-radius:3px}
+.v-dot{position:absolute;top:50%;width:10px;height:10px;border-radius:50%;
+  transform:translate(-50%,-50%);border:2px solid var(--card)}
+.v-ctx{font-size:12px;color:var(--muted);line-height:1.5}
+.v-act{font-size:12px;font-weight:650;margin-top:5px}
+.v-act.continue{color:var(--accent)} .v-act.watch{color:var(--blue)}
+.v-act.change{color:var(--warm)} .v-act.clinician{color:var(--alert)}
+
+/* ── Demoted metrics ────────────────────────────────────────────────── */
+details.more{margin:0 13px 11px}
+details.more>summary{cursor:pointer;font-size:12px;font-weight:650;color:var(--muted);
+  padding:11px 15px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  list-style:none;display:flex;justify-content:space-between;align-items:center;box-shadow:var(--shadow)}
+details.more>summary::-webkit-details-marker{display:none}
+details.more[open]>summary{border-radius:var(--r) var(--r) 0 0;border-bottom:none}
+.more-body{background:var(--card);border:1px solid var(--line);border-top:none;
+  border-radius:0 0 var(--r) var(--r);padding:4px 15px 15px;box-shadow:var(--shadow)}
+.mgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px 8px;margin-top:10px}
+.mgrid .m .v{font-size:16px;font-weight:720;letter-spacing:-.3px}
+.mgrid .m .k{font-size:10.5px;color:var(--muted);font-weight:600;margin-top:1px}
+
+/* ── Chips / toggles ────────────────────────────────────────────────── */
+.chips{display:flex;gap:6px;margin:0 13px 11px;flex-wrap:wrap}
+.chip{padding:6px 13px;border-radius:999px;background:var(--card);border:1px solid var(--line);
+  font-size:12px;font-weight:650;cursor:pointer;color:var(--muted);font-family:inherit;transition:all .15s}
+.chip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* ── Charts ─────────────────────────────────────────────────────────── */
+.chart-box{position:relative;height:150px;margin-top:4px}
+.chart-box.tall{height:184px}
+.legend{display:flex;gap:13px;flex-wrap:wrap;margin-top:9px;font-size:11px;color:var(--muted)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+
+/* ── Workouts ───────────────────────────────────────────────────────── */
+.wo{display:flex;gap:11px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.wo:last-child{border-bottom:none}
+.wo-ic{width:36px;height:36px;border-radius:11px;background:var(--accent-soft);color:var(--accent);
+  display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}
+.wo-mid{flex:1;min-width:0}
+.wo-nm{font-size:14px;font-weight:680;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wo-sub{font-size:11.5px;color:var(--muted);margin-top:1px}
+.wo-rt{text-align:right;flex-shrink:0}
+.wo-dur{font-size:14.5px;font-weight:700;letter-spacing:-.3px}
+.wo-kc{font-size:11px;color:var(--muted)}
+
+/* ── Settings ───────────────────────────────────────────────────────── */
+.srow{display:flex;align-items:center;justify-content:space-between;gap:11px;
+  padding:12px 0;border-bottom:1px solid var(--line)}
+.srow:last-child{border-bottom:none}
+.srow .sl{font-size:13.5px;font-weight:620}
+.srow .sd{font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.45}
+.btn{background:var(--accent);color:#fff;border:none;border-radius:var(--rs);padding:9px 15px;
+  font-size:13px;font-weight:680;cursor:pointer;font-family:inherit;flex-shrink:0;transition:opacity .15s}
+.btn:active{opacity:.75}
+.btn.ghost{background:var(--card2);color:var(--ink2);border:1px solid var(--line)}
+.btn.wide{width:100%;margin-top:9px}
+.seg{display:flex;gap:0;border:1px solid var(--line);border-radius:var(--rs);overflow:hidden;flex-shrink:0}
+.seg button{border:none;background:var(--card2);color:var(--muted);padding:7px 12px;font-size:12px;
+  font-weight:650;cursor:pointer;font-family:inherit}
+.seg button.on{background:var(--accent);color:#fff}
+
+/* ── Banners, modal, toast ──────────────────────────────────────────── */
+.banner{margin:0 13px 11px;padding:11px 13px;border-radius:var(--rs);font-size:12.5px;line-height:1.5}
+.banner.info{background:var(--blue-soft);color:var(--blue)}
+.banner.warn{background:var(--warm-soft);color:var(--warm)}
+.banner.ok{background:var(--accent-soft);color:var(--accent)}
+.disclaimer{font-size:11px;color:var(--muted);line-height:1.55;margin:14px 16px 4px;text-align:center}
+.empty{text-align:center;padding:44px 26px;color:var(--muted)}
+.empty .e-ic{font-size:38px;margin-bottom:12px;opacity:.5}
+.empty .e-h{font-size:15px;font-weight:680;color:var(--ink);margin-bottom:6px}
+.empty .e-b{font-size:13px;line-height:1.55}
+.mo{position:fixed;inset:0;background:rgba(16,22,28,.5);z-index:200;display:flex;
+  align-items:flex-end;justify-content:center;backdrop-filter:blur(2px)}
+.mo.hidden{display:none}
+.md{background:var(--card);width:100%;max-width:440px;max-height:86vh;overflow-y:auto;
+  border-radius:var(--r) var(--r) 0 0;padding:19px 17px calc(24px + env(safe-area-inset-bottom))}
+.md h3{font-size:17px;font-weight:730;letter-spacing:-.3px;margin-bottom:3px}
+.md .mdsub{font-size:12.5px;color:var(--muted);margin-bottom:15px}
+.toast{position:fixed;bottom:calc(var(--nav-h) + 16px);left:50%;transform:translateX(-50%) translateY(80px);
+  background:var(--ink);color:var(--bg);padding:10px 17px;border-radius:22px;font-size:13px;font-weight:620;
+  z-index:300;opacity:0;transition:all .26s;pointer-events:none;max-width:88%;text-align:center}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+.spin{width:22px;height:22px;border:2.5px solid var(--line);border-top-color:var(--accent);
+  border-radius:50%;animation:sp .8s linear infinite;margin:0 auto}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="header"></div>
+  <div id="content"></div>
+  <nav id="nav">
+    <button class="nb active" data-view="today"    onclick="sv('today')"><span class="ni">◉</span><span>Today</span></button>
+    <button class="nb"        data-view="trends"   onclick="sv('trends')"><span class="ni">📈</span><span>Trends</span></button>
+    <button class="nb"        data-view="workouts" onclick="sv('workouts')"><span class="ni">🏃</span><span>Workouts</span></button>
+    <button class="nb"        data-view="settings" onclick="sv('settings')"><span class="ni">⚙️</span><span>Settings</span></button>
+  </nav>
+</div>
+<div class="mo hidden" id="MO" onclick="handleOC(event)"><div class="md" id="MD"></div></div>
+<div class="toast" id="T"></div>
+
+<script>
+'use strict';
+/* ══════════════════════════════════════════════════════════════════════
+   Health Tracker — single-file PWA.
+
+   Architecture mirrors the Finance and Mio trackers: one HTML file, no build
+   step, localStorage as the source of truth on-device, Google Drive as the
+   sync layer. The numbers themselves come from engine.js, which is a 1:1 port
+   of the reviewed Python pipeline (scripts/readiness.py, compute_baselines.py)
+   and is covered by tools/test-engine.mjs.
+
+   Nothing here talks to a health API. The only network calls are the app's own
+   Drive sync and the Chart.js CDN.
+   ══════════════════════════════════════════════════════════════════════ */
+
+const E = window.HTEngine;
+const STORE_KEY = 'ht1';
+const APP_VERSION = '2026.09.05';
+
+const DEF = {
+  version: 1,
+  settings: { units: { weight: 'lb', distance: 'mi', temp: 'F' }, maxHr: null, updatedAt: 0 },
+  daily: {}, workouts: [], meals: [], sync: {}, meta: {}
+};
+
+let data = clone(DEF);
+let derived = null;          // { baselines, readiness, dates } — recomputed, never persisted
+let view = 'today';
+let trendRange = 28;
+let trendMetric = 'slp';
+let woRange = 90;
+let charts = [];
+
+function clone(o) { return JSON.parse(JSON.stringify(o)); }
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+/* ── Storage ─────────────────────────────────────────────────────────── */
+function saveLocal() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
+  catch (e) {
+    // A quota failure must be loud: silently dropping a save is how a day of
+    // data disappears without anyone noticing.
+    console.error('save failed', e);
+    toast('⚠️ Could not save locally — storage may be full');
+  }
+}
+function loadLocal() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) data = Object.assign(clone(DEF), JSON.parse(raw));
+  } catch (e) { console.error('load failed', e); }
+  if (!data.daily) data.daily = {};
+  if (!Array.isArray(data.workouts)) data.workouts = [];
+  if (!data.settings) data.settings = clone(DEF.settings);
+  if (!data.settings.units) data.settings.units = clone(DEF.settings.units);
+}
+
+/* ── Unit display ────────────────────────────────────────────────────
+   Rows are stored canonical (kg / km / °C) so a units change in the iPhone app
+   can never corrupt history; conversion happens only at render time. */
+const U = E.util;
+function dWeight(kg, d) { if (kg == null) return null; const u = data.settings.units.weight; return round(u === 'lb' ? kg / U.LB_KG : kg, d == null ? 1 : d); }
+function uWeight() { return data.settings.units.weight; }
+function dDist(km, d) { if (km == null) return null; const u = data.settings.units.distance; return round(u === 'mi' ? km / U.MI_KM : km, d == null ? 2 : d); }
+function uDist() { return data.settings.units.distance; }
+function round(v, d) { return v == null ? null : Math.round(v * Math.pow(10, d)) / Math.pow(10, d); }
+function fmt(v, d) { return v == null ? '—' : (d ? v.toFixed(d) : String(Math.round(v))); }
+function hrs(h) { if (h == null) return '—'; const H = Math.floor(h), M = Math.round((h - H) * 60); return H + 'h ' + String(M).padStart(2, '0') + 'm'; }
+function dur(sec) { if (!sec) return '—'; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h ? h + 'h ' + m + 'm' : m + 'm'; }
+function niceDate(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+function daysAgo(iso) { return U.daysBetween(iso, todayISO()); }
+function todayISO() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+
+/* ── Derived state ───────────────────────────────────────────────────── */
+function recompute() {
+  const n = Object.keys(data.daily).length;
+  derived = n ? E.deriveAll(data.daily) : { baselines: {}, readiness: {}, dates: [] };
+}
+/** Most recent date that carries a scored readiness result. */
+function latestScoredDate() {
+  if (!derived) return null;
+  for (let i = derived.dates.length - 1; i >= 0; i--) {
+    const d = derived.dates[i];
+    if (derived.readiness[d]) return d;
+  }
+  return null;
+}
+function latestDate() { return derived && derived.dates.length ? derived.dates[derived.dates.length - 1] : null; }
+
+/* ══ VITAL SPECS ══════════════════════════════════════════════════════
+   The "watch daily" tier from 04 Overall Plan §4. Everything not listed here
+   is demoted into the collapsed "Other readings" block — sleep stages, basal
+   calories, BMI, body fat and single SpO2 spot-checks are explicitly called
+   vanity metrics in the research and must not compete with these for
+   attention. `dir` is which direction is the concerning one. */
+const VITALS = [
+  { k: 'slp',  name: 'Sleep',       unit: 'h',    base: 'slp_base',  dir: 'low',  d: 1, fmtv: v => v.toFixed(1),
+    good: 'Sleeping in your usual range.' },
+  { k: 'rhr',  name: 'Resting HR',  unit: 'bpm',  base: 'rhr_base',  dir: 'high', d: 0, fmtv: v => String(Math.round(v)),
+    good: 'Resting heart rate is sitting where it usually does.' },
+  { k: 'hrv',  name: 'HRV',         unit: 'ms',   base: 'hrv_base',  dir: 'low',  d: 0, fmtv: v => String(Math.round(v)),
+    good: 'Overnight HRV is in your normal band.' },
+  { k: 'resp', name: 'Resp rate',   unit: 'br/min', base: 'resp_base', dir: 'high', d: 1, fmtv: v => v.toFixed(1),
+    good: 'Breathing rate is steady overnight.' }
+];
+
+/* ── Watch / continue / change one thing / talk to a clinician ────────
+   Every prominent panel has to land on one of these four. A metric that can't
+   map to an action does not belong on the home view (04 Overall Plan §7). */
+function actionFor(vt, val, base, spread, streak) {
+  if (val == null || base == null) return { cls: 'watch', txt: 'Watch — not enough recent data to compare.' };
+  const off = vt.dir === 'high' ? val - base : base - val;
+  const sp = spread && spread > 0 ? spread : Math.abs(base) * 0.06;
+  const z = off / sp;
+  if (z < 1) return { cls: 'continue', txt: 'Continue — ' + vt.good };
+  if (z < 2) return { cls: 'watch', txt: 'Watch — off your usual range, but within normal night-to-night noise.' };
+  if (streak >= 7) return { cls: 'clinician', txt: 'Worth raising with a clinician — this has run outside your usual range for ' + streak + ' days.' };
+  return { cls: 'change', txt: 'Change one thing — ' + changeHint(vt.k) + ' Reassess in 3 days.' };
+}
+function changeHint(k) {
+  return k === 'slp' ? 'try lights out 20-30 minutes earlier.'
+    : k === 'rhr' ? 'ease off training load and check alcohol and late meals.'
+    : k === 'hrv' ? 'protect sleep timing and keep tomorrow easy.'
+    : 'keep an eye on it and note anything else you feel.';
+}
+/** How many consecutive recent days this metric has sat outside the usual band. */
+function offStreak(vt) {
+  if (!derived) return 0;
+  let n = 0;
+  for (let i = derived.dates.length - 1; i >= 0; i--) {
+    const d = derived.dates[i], r = data.daily[d], b = derived.baselines[d];
+    if (!r || r[vt.k] == null || !b || b[vt.base] == null) { if (n) continue; else continue; }
+    const sp = b[vt.k + '_mad'] || Math.abs(b[vt.base]) * 0.06;
+    const off = vt.dir === 'high' ? r[vt.k] - b[vt.base] : b[vt.base] - r[vt.k];
+    if (off / (sp || 1) >= 1) n++; else break;
+  }
+  return n;
+}
+
+/* ══ RENDER ═══════════════════════════════════════════════════════════ */
+function destroyCharts() { charts.forEach(c => { try { c.destroy(); } catch (e) {} }); charts = []; }
+
+function sv(v) {
+  view = v;
+  document.querySelectorAll('.nb').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+  $('content').scrollTop = 0;
+  render();
+}
+function render() { destroyCharts(); renderHeader(); renderView(); }
+
+function renderHeader() {
+  const h = $('header');
+  const nDays = Object.keys(data.daily).length;
+  if (!nDays) {
+    h.innerHTML = '<div class="hdr-lbl">Health Tracker</div><div class="hdr-main">No data yet</div>' +
+      '<div class="hdr-sub">Import your Health Auto Export data from Settings to get started.</div>';
+    return;
+  }
+  const ld = latestDate(), sd = latestScoredDate();
+  const rd = sd ? derived.readiness[sd] : null;
+  const ago = ld ? daysAgo(ld) : null;
+  const freshness = ago === 0 ? 'Up to date' : ago === 1 ? 'Through yesterday' : 'Through ' + niceDate(ld);
+
+  let main, sub;
+  if (rd) {
+    main = rd.state;
+    sub = sd === ld ? niceDate(sd) : 'Last scored ' + niceDate(sd);
+  } else {
+    main = 'No score';
+    sub = 'The most recent days are missing sleep, HRV or resting HR.';
+  }
+  const pills = [];
+  pills.push('<span class="hpill">' + esc(freshness) + '</span>');
+  pills.push('<span class="hpill">' + nDays.toLocaleString() + ' days</span>');
+  if (data.workouts.length) pills.push('<span class="hpill">' + data.workouts.length + ' workouts</span>');
+
+  h.innerHTML =
+    '<div class="hdr-lbl">Readiness</div>' +
+    '<div class="hdr-main">' + esc(main) + '</div>' +
+    '<div class="hdr-sub">' + esc(sub) + '</div>' +
+    '<div class="hdr-pills">' + pills.join('') + '</div>';
+}
+
+function renderView() {
+  const c = $('content');
+  if (!Object.keys(data.daily).length && view !== 'settings') { c.innerHTML = emptyState(); return; }
+  if (view === 'today') c.innerHTML = viewToday();
+  else if (view === 'trends') { c.innerHTML = viewTrends(); drawTrendChart(); }
+  else if (view === 'workouts') { c.innerHTML = viewWorkouts(); drawWorkoutChart(); }
+  else c.innerHTML = viewSettings();
+}
+
+function emptyState() {
+  return '<div class="empty"><div class="e-ic">◉</div>' +
+    '<div class="e-h">Nothing to show yet</div>' +
+    '<div class="e-b">Your Apple Watch data lives in Google Drive as Health Auto Export files. ' +
+    'Open Settings to import a data file, or connect Drive to sync.</div>' +
+    '<button class="btn" style="margin-top:18px" onclick="sv(\'settings\')">Open Settings</button></div>';
+}
+
+/* ── TODAY ───────────────────────────────────────────────────────────── */
+function viewToday() {
+  const sd = latestScoredDate(), ld = latestDate();
+  let h = '';
+
+  // Staleness is stated plainly rather than smoothed over: a dashboard showing
+  // four-day-old numbers as if they were today's is worse than no dashboard.
+  const ago = ld ? daysAgo(ld) : null;
+  if (ago != null && ago > 2) {
+    h += '<div class="banner warn">Latest data is from ' + esc(niceDate(ld)) + ' (' + ago + ' days ago). ' +
+      'Health Auto Export may not have run, or the sync has not picked it up yet.</div>';
+  }
+
+  if (!sd) {
+    h += '<div class="card"><div class="card-title">Readiness</div>' +
+      '<div class="ready-why">No recent day has all of sleep, resting HR and HRV, so there is nothing to score. ' +
+      'That usually means the watch was off overnight.</div></div>';
+  } else {
+    const rd = derived.readiness[sd], row = data.daily[sd], b = derived.baselines[sd] || {};
+    const cls = rd.state.toLowerCase();
+    const col = rd.state === 'Ready' ? 'var(--accent)' : rd.state === 'Steady' ? 'var(--blue)' : 'var(--warm)';
+    const pct = rd.score == null ? 0 : rd.score;
+    const R = 46, C = 2 * Math.PI * R;
+
+    h += '<div class="card">';
+    h += '<div class="card-title">' + (sd === ld ? 'Today' : esc(niceDate(sd))) + '</div>';
+    h += '<div class="ready-wrap">';
+    h += '<div class="ring"><svg width="104" height="104" viewBox="0 0 104 104">' +
+      '<circle cx="52" cy="52" r="' + R + '" fill="none" stroke="var(--band)" stroke-width="8"/>' +
+      '<circle cx="52" cy="52" r="' + R + '" fill="none" stroke="' + col + '" stroke-width="8" stroke-linecap="round" ' +
+      'stroke-dasharray="' + C.toFixed(1) + '" stroke-dashoffset="' + (C * (1 - pct / 100)).toFixed(1) + '"/></svg>' +
+      '<div class="ring-val"><div class="ring-num" style="color:' + col + '">' + (rd.score == null ? '—' : rd.score) + '</div>' +
+      '<div class="ring-cap">' + (rd.score == null ? 'partial' : 'score') + '</div></div></div>';
+    h += '<div class="ready-txt"><div class="state ' + cls + '">' + esc(rd.state) + '</div>' +
+      '<div class="ready-why">' + esc(readableWhy(rd, row, b)) + '</div></div>';
+    h += '</div>';
+
+    if (rd.override) {
+      h += '<div class="override-box"><div class="ob-h">Recovery likely compromised</div>' +
+        '<div class="ob-b">' + esc(rd.conds.join(' · ')) + '. Two or more signals moved together, which is more ' +
+        'meaningful than any single number. Keep today easy and see how tomorrow reads.</div></div>';
+    }
+    if (rd.partial) {
+      h += '<div class="override-box" style="background:var(--blue-soft);border-left-color:var(--blue)">' +
+        '<div class="ob-h" style="color:var(--blue)">Based on partial data</div>' +
+        '<div class="ob-b">Some signals were missing, so there is no numeric score — only the override call above.</div></div>';
+    }
+    h += '</div>';
+
+    // Watch-worthy vitals
+    h += '<div class="card"><div class="card-title">Worth watching</div>';
+    for (const vt of VITALS) {
+      const val = row[vt.k], base = b[vt.base], sp = b[vt.k + '_mad'];
+      h += vitalRow(vt, val, base, sp);
+    }
+    h += weightRow(sd);
+    h += '</div>';
+
+    // Demoted tier
+    h += demotedBlock(row, sd);
+  }
+
+  h += '<div class="disclaimer">Everything here is your own measured data compared with your own recent baseline. ' +
+    'It is not a diagnosis and does not replace a clinician.</div>';
+  return h;
+}
+
+function readableWhy(rd, row, b) {
+  const bits = [];
+  if (row.slp != null && b.slp_base != null) {
+    const dm = Math.round((row.slp - b.slp_base) * 60);
+    bits.push('slept ' + row.slp.toFixed(1) + 'h (' + (dm >= 0 ? '+' : '') + dm + ' min vs usual)');
+  }
+  if (row.rhr != null && b.rhr_base != null) {
+    const dd = Math.round(row.rhr - b.rhr_base);
+    bits.push('resting HR ' + Math.round(row.rhr) + (dd === 0 ? ' (at your usual)' : ' (' + (dd > 0 ? '+' : '') + dd + ' vs usual)'));
+  }
+  if (row.hrv != null && b.hrv_base != null) {
+    const p = Math.round((row.hrv - b.hrv_base) / b.hrv_base * 100);
+    bits.push('HRV ' + Math.round(row.hrv) + 'ms (' + (p >= 0 ? '+' : '') + p + '%)');
+  }
+  return bits.length ? bits.join(', ') + '.' : 'Not enough baseline yet to compare against.';
+}
+
+function vitalRow(vt, val, base, spread) {
+  const streak = offStreak(vt);
+  const act = actionFor(vt, val, base, spread, streak);
+  let bar = '';
+  if (val != null && base != null) {
+    // The band is +/- 1 spread around the baseline; the axis spans +/- 3 so an
+    // ordinary night sits visibly inside the band and a real excursion reads as
+    // an excursion rather than pinning to the edge.
+    const sp = spread && spread > 0 ? spread : Math.abs(base) * 0.06;
+    const lo = base - 3 * sp, hi = base + 3 * sp;
+    const pos = Math.max(2, Math.min(98, ((val - lo) / (hi - lo)) * 100));
+    const bl = ((base - sp - lo) / (hi - lo)) * 100, bw = ((2 * sp) / (hi - lo)) * 100;
+    const dotCol = act.cls === 'continue' ? 'var(--accent)' : act.cls === 'watch' ? 'var(--blue)'
+      : act.cls === 'change' ? 'var(--warm)' : 'var(--alert)';
+    bar = '<div class="v-bar"><div class="v-band" style="left:' + bl.toFixed(1) + '%;width:' + bw.toFixed(1) + '%"></div>' +
+      '<div class="v-dot" style="left:' + pos.toFixed(1) + '%;background:' + dotCol + '"></div></div>';
+  }
+  const ctx = base == null ? 'No baseline yet — needs more complete days in the last month.'
+    : 'Your usual is about ' + vt.fmtv(base) + ' ' + vt.unit +
+      (streak > 1 ? '. Outside that range ' + streak + ' days running.' : '.');
+  return '<div class="vital"><div class="v-top"><span class="v-name">' + esc(vt.name) + '</span>' +
+    '<span><span class="v-val">' + (val == null ? '—' : esc(vt.fmtv(val))) + '</span>' +
+    '<span class="v-unit">' + esc(vt.unit) + '</span></span></div>' +
+    bar +
+    '<div class="v-ctx">' + esc(ctx) + '</div>' +
+    '<div class="v-act ' + act.cls + '">' + esc(act.txt) + '</div></div>';
+}
+
+/** Weight is watch-daily but only as a 7-day average — a single morning reading
+ *  is mostly water, and showing it daily is exactly the anxiety loop the design
+ *  brief warns about. */
+function weightRow(endDate) {
+  // The scale reports sporadically, so a strict 7-day window is often empty.
+  // Widen to 14 days rather than showing nothing, and label it honestly below.
+  const w = E.weightAvg(data.daily, endDate, 14);
+  const prev = E.weightAvg(data.daily, U.addDays(endDate, -28), 14);
+  if (w == null) return '';
+  const d = prev == null ? null : w - prev;
+  const dispW = dWeight(w), dispD = d == null ? null : round(d / (uWeight() === 'lb' ? U.LB_KG : 1), 1);
+  const ctx = d == null ? 'Two-week average. Not enough history yet for a month-over-month move.'
+    : 'Two-week average, ' + (Math.abs(dispD) < 0.2 ? 'flat' : (dispD > 0 ? 'up ' : 'down ') + Math.abs(dispD) + ' ' + uWeight()) + ' vs a month ago.';
+  const act = d == null || Math.abs(dispD) < 1.5
+    ? { cls: 'continue', txt: 'Continue — no meaningful drift.' }
+    : { cls: 'watch', txt: 'Watch — a month-scale move worth knowing about, not reacting to.' };
+  return '<div class="vital"><div class="v-top"><span class="v-name">Weight (2-week avg)</span>' +
+    '<span><span class="v-val">' + fmt(dispW, 1) + '</span><span class="v-unit">' + uWeight() + '</span></span></div>' +
+    '<div class="v-ctx">' + esc(ctx) + '</div>' +
+    '<div class="v-act ' + act.cls + '">' + esc(act.txt) + '</div></div>';
+}
+
+function demotedBlock(row, d) {
+  const items = [
+    ['Deep sleep', row.score == null && row.sdeep == null ? null : row.sdeep, 'h', 1],
+    ['REM', row.srem, 'h', 1],
+    ['Core', row.score, 'h', 1],
+    ['Awake', row.sawake, 'h', 1],
+    ['Steps', row.steps, '', 0],
+    ['Active', row.akcal, 'kcal', 0],
+    ['Exercise', row.exmin, 'min', 0],
+    ['Stand', row.stand, 'hrs', 0],
+    ['SpO2', row.spo2, '%', 0],
+    ['Walking HR', row.whr, 'bpm', 0],
+    ['VO2 max', row.vo2, '', 1],
+    ['Basal', row.bkcal, 'kcal', 0],
+    ['BMI', row.bmi, '', 1],
+    ['Body fat', row.bf, '%', 1],
+    ['Daylight', row.daylight, 'min', 0]
+  ].filter(x => x[1] != null);
+  if (!items.length) return '';
+  const cells = items.map(([k, v, u, dd]) =>
+    '<div class="m"><div class="v">' + esc(fmt(v, dd)) + (u ? '<span class="v-unit">' + esc(u) + '</span>' : '') + '</div>' +
+    '<div class="k">' + esc(k) + '</div></div>').join('');
+  return '<details class="more"><summary><span>Other readings for ' + esc(niceDate(d)) + '</span><span>▾</span></summary>' +
+    '<div class="more-body"><div class="v-ctx">Sleep stages, basal calories, BMI, body fat and single SpO2 readings ' +
+    'carry real measurement error on a watch. They are here for completeness, not for daily decisions.</div>' +
+    '<div class="mgrid">' + cells + '</div></div></details>';
+}
+
+/* ── TRENDS ──────────────────────────────────────────────────────────── */
+const TREND_METRICS = [
+  { k: 'slp',   label: 'Sleep',      unit: 'h',     base: 'slp_base',  d: 1 },
+  { k: 'rhr',   label: 'Resting HR', unit: 'bpm',   base: 'rhr_base',  d: 0 },
+  { k: 'hrv',   label: 'HRV',        unit: 'ms',    base: 'hrv_base',  d: 0 },
+  { k: 'resp',  label: 'Resp rate',  unit: 'br/min', base: 'resp_base', d: 1 },
+  { k: 'steps', label: 'Steps',      unit: '',      base: null,        d: 0 },
+  { k: 'akcal', label: 'Active kcal', unit: 'kcal', base: 'akcal_base', d: 0 },
+  { k: 'wt',    label: 'Weight',     unit: '',      base: null,        d: 1 }
+];
+
+function viewTrends() {
+  const m = TREND_METRICS.find(x => x.k === trendMetric) || TREND_METRICS[0];
+  let h = '';
+  h += '<div class="chips">' + [7, 28, 90, 365, 0].map(r =>
+    '<button class="chip' + (trendRange === r ? ' on' : '') + '" onclick="setRange(' + r + ')">' +
+    (r === 0 ? 'All' : r < 365 ? r + 'd' : '1y') + '</button>').join('') + '</div>';
+  h += '<div class="chips">' + TREND_METRICS.map(x =>
+    '<button class="chip' + (trendMetric === x.k ? ' on' : '') + '" onclick="setMetric(\'' + x.k + '\')">' +
+    esc(x.label) + '</button>').join('') + '</div>';
+
+  const series = trendSeries(m);
+  h += '<div class="card"><div class="card-title">' + esc(m.label) + summaryTail(m, series) + '</div>' +
+    '<div class="chart-box tall"><canvas id="tchart"></canvas></div>' +
+    '<div class="legend"><span><i style="background:var(--accent)"></i>' + esc(m.label) + '</span>' +
+    (m.base ? '<span><i style="background:var(--muted);opacity:.55"></i>Your baseline</span>' : '') +
+    '</div></div>';
+
+  h += whatChangedCard();
+
+  const cov = series.filter(p => p.v != null).length;
+  h += '<div class="banner info">Showing ' + cov + ' readings' +
+    (series.length ? ' out of ' + series.length + ' days in range' : '') +
+    '. Days the watch was off are left as gaps rather than filled in.</div>';
+  return h;
+}
+function setRange(r) { trendRange = r; render(); }
+function setMetric(k) { trendMetric = k; render(); }
+
+function trendSeries(m) {
+  if (!derived) return [];
+  const all = derived.dates;
+  const dates = trendRange === 0 ? all : all.slice(-trendRange);
+  return dates.map(d => {
+    const r = data.daily[d] || {}, b = derived.baselines[d] || {};
+    let v = r[m.k];
+    if (m.k === 'wt' && v != null) v = dWeight(v, 1);
+    return { d, v: v == null ? null : v, b: m.base ? (b[m.base] == null ? null : b[m.base]) : null };
+  });
+}
+function summaryTail(m, series) {
+  const vals = series.map(p => p.v).filter(v => v != null);
+  if (!vals.length) return '';
+  const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const unit = m.k === 'wt' ? uWeight() : m.unit;
+  return ' · avg ' + fmt(avg, m.d) + (unit ? ' ' + unit : '');
+}
+
+/** Plain comparison of the last 7 days against the 21 before them. Stated as a
+ *  direction and a size, never as a verdict. */
+function whatChangedCard() {
+  if (!derived || derived.dates.length < 14) return '';
+  const dates = derived.dates;
+  const recent = dates.slice(-7), prior = dates.slice(-28, -7);
+  const rows = [];
+  for (const m of TREND_METRICS) {
+    if (m.k === 'wt') continue;
+    const a = avgKey(recent, m.k), b = avgKey(prior, m.k);
+    if (a == null || b == null || b === 0) continue;
+    const pct = (a - b) / Math.abs(b) * 100;
+    if (Math.abs(pct) < 4) continue;
+    rows.push({ label: m.label, pct, a, b, d: m.d, unit: m.unit });
+  }
+  if (!rows.length) {
+    return '<div class="card"><div class="card-title">What changed</div>' +
+      '<div class="v-ctx">Nothing moved more than 4% between the last 7 days and the 3 weeks before. ' +
+      'A quiet week is a good week.</div></div>';
+  }
+  rows.sort((x, y) => Math.abs(y.pct) - Math.abs(x.pct));
+  const body = rows.slice(0, 5).map(r =>
+    '<div class="vital"><div class="v-top"><span class="v-name">' + esc(r.label) + '</span>' +
+    '<span class="v-val" style="font-size:15px;color:var(--muted)">' + (r.pct > 0 ? '+' : '') + r.pct.toFixed(0) + '%</span></div>' +
+    '<div class="v-ctx">' + esc(fmt(r.b, r.d) + ' → ' + fmt(r.a, r.d) + (r.unit ? ' ' + r.unit : '')) +
+    ', last 7 days vs the 3 weeks before.</div></div>').join('');
+  return '<div class="card"><div class="card-title">What changed</div>' + body + '</div>';
+}
+function avgKey(dates, k) {
+  const xs = dates.map(d => (data.daily[d] || {})[k]).filter(v => typeof v === 'number');
+  return xs.length >= 3 ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+}
+
+function drawTrendChart() {
+  const cv = $('tchart'); if (!cv || !window.Chart) return;
+  const m = TREND_METRICS.find(x => x.k === trendMetric) || TREND_METRICS[0];
+  const s = trendSeries(m);
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue('--accent').trim() || '#3a7d6e';
+  const muted = css.getPropertyValue('--muted').trim() || '#6b7787';
+  const line = css.getPropertyValue('--line').trim() || '#e2e7ec';
+  const ds = [{
+    label: m.label, data: s.map(p => p.v), borderColor: accent, backgroundColor: accent + '22',
+    borderWidth: 2, pointRadius: s.length > 60 ? 0 : 2, pointBackgroundColor: accent,
+    tension: .25, spanGaps: false, fill: true
+  }];
+  if (m.base) ds.push({
+    label: 'Baseline', data: s.map(p => p.b), borderColor: muted, borderWidth: 1.5,
+    borderDash: [5, 4], pointRadius: 0, tension: .25, spanGaps: true, fill: false
+  });
+  charts.push(new Chart(cv, {
+    type: 'line',
+    data: { labels: s.map(p => p.d), datasets: ds },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: it => niceDate(it[0].label),
+            label: it => it.dataset.label + ': ' + (it.parsed.y == null ? 'no reading' : fmt(it.parsed.y, m.d))
+          }
+        }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: muted, maxTicksLimit: 6, font: { size: 10 },
+             callback: function (v) { const d = this.getLabelForValue(v); return d ? d.slice(5) : ''; } } },
+        y: { grid: { color: line }, ticks: { color: muted, font: { size: 10 }, maxTicksLimit: 5 },
+             beginAtZero: m.k === 'steps' || m.k === 'akcal' }
+      }
+    }
+  }));
+}
+
+/* ── WORKOUTS ────────────────────────────────────────────────────────── */
+const WO_ICON = { run: '🏃', walk: '🚶', strength: '🏋️', hiit: '⚡', cycle: '🚴', cardio: '🎽', mobility: '🧘', swim: '🏊', other: '💪' };
+
+function woInRange() {
+  const ws = data.workouts.slice().sort((a, b) => (b.start || '').localeCompare(a.start || ''));
+  if (!woRange) return ws;
+  const cutoff = U.addDays(todayISO(), -woRange);
+  return ws.filter(w => w.d >= cutoff);
+}
+
+function viewWorkouts() {
+  if (!data.workouts.length) {
+    return '<div class="empty"><div class="e-ic">🏃</div><div class="e-h">No workouts imported</div>' +
+      '<div class="e-b">Workout files come from the Workout Backup folder in your Health Auto Export data.</div></div>';
+  }
+  const ws = woInRange();
+  let h = '';
+  h += '<div class="chips">' + [30, 90, 365, 0].map(r =>
+    '<button class="chip' + (woRange === r ? ' on' : '') + '" onclick="setWoRange(' + r + ')">' +
+    (r === 0 ? 'All time' : r < 365 ? r + ' days' : '1 year') + '</button>').join('') + '</div>';
+
+  if (!ws.length) {
+    h += '<div class="card"><div class="v-ctx">No workouts recorded in this window. ' +
+      'Widen the range to see your history.</div></div>';
+    return h;
+  }
+
+  const totMin = ws.reduce((a, w) => a + (w.dur || 0), 0) / 60;
+  const totKcal = ws.reduce((a, w) => a + (w.kcal || 0), 0);
+  const totKm = ws.reduce((a, w) => a + (w.dist || 0), 0);
+  const weeks = Math.max(1, (woRange || U.daysBetween(ws[ws.length - 1].d, todayISO())) / 7);
+
+  h += '<div class="card"><div class="card-title">Volume</div>' +
+    '<div class="mgrid" style="margin-top:0">' +
+    '<div class="m"><div class="v">' + ws.length + '</div><div class="k">sessions</div></div>' +
+    '<div class="m"><div class="v">' + Math.round(totMin) + '<span class="v-unit">min</span></div><div class="k">total time</div></div>' +
+    '<div class="m"><div class="v">' + Math.round(totKcal).toLocaleString() + '</div><div class="k">active kcal</div></div>' +
+    '<div class="m"><div class="v">' + (ws.length / weeks).toFixed(1) + '</div><div class="k">per week</div></div>' +
+    '<div class="m"><div class="v">' + Math.round(totMin / weeks) + '<span class="v-unit">min</span></div><div class="k">min / week</div></div>' +
+    '<div class="m"><div class="v">' + fmt(dDist(totKm), 1) + '<span class="v-unit">' + uDist() + '</span></div><div class="k">distance</div></div>' +
+    '</div></div>';
+
+  h += '<div class="card"><div class="card-title">Weekly minutes</div>' +
+    '<div class="chart-box"><canvas id="wchart"></canvas></div></div>';
+
+  // Mix by family
+  const fam = {};
+  ws.forEach(w => { const f = E.workoutFamily(w.name); fam[f] = (fam[f] || 0) + (w.dur || 0) / 60; });
+  const famRows = Object.entries(fam).sort((a, b) => b[1] - a[1]);
+  const famTot = famRows.reduce((a, x) => a + x[1], 0) || 1;
+  h += '<div class="card"><div class="card-title">Mix</div>' +
+    famRows.map(([f, mins]) =>
+      '<div style="display:flex;align-items:center;gap:10px;padding:6px 0">' +
+      '<span style="width:22px;text-align:center">' + (WO_ICON[f] || '💪') + '</span>' +
+      '<span style="flex:1;font-size:13px;font-weight:620;text-transform:capitalize">' + esc(f) + '</span>' +
+      '<span style="flex:2;height:6px;background:var(--band);border-radius:3px;overflow:hidden">' +
+      '<span style="display:block;height:100%;width:' + (mins / famTot * 100).toFixed(1) + '%;background:var(--accent)"></span></span>' +
+      '<span style="font-size:11.5px;color:var(--muted);width:46px;text-align:right">' + Math.round(mins) + 'm</span></div>').join('') +
+    '</div>';
+
+  h += '<div class="section-h">Recent sessions</div><div class="card">';
+  h += ws.slice(0, 40).map((w, i) => {
+    const f = E.workoutFamily(w.name);
+    const bits = [niceDate(w.d)];
+    if (w.dist) bits.push(fmt(dDist(w.dist), 2) + ' ' + uDist());
+    if (w.hravg) bits.push(w.hravg + ' bpm avg');
+    const pace = E.paceMinKm(w);
+    if (pace && uDist() === 'mi') bits.push((pace * U.MI_KM).toFixed(1) + ' min/mi');
+    else if (pace) bits.push(pace.toFixed(1) + ' min/km');
+    return '<div class="wo" onclick="woDetail(' + i + ')">' +
+      '<div class="wo-ic">' + (WO_ICON[f] || '💪') + '</div>' +
+      '<div class="wo-mid"><div class="wo-nm">' + esc(w.name) + '</div>' +
+      '<div class="wo-sub">' + esc(bits.join(' · ')) + '</div></div>' +
+      '<div class="wo-rt"><div class="wo-dur">' + dur(w.dur) + '</div>' +
+      '<div class="wo-kc">' + (w.kcal ? w.kcal + ' kcal' : '') + '</div></div></div>';
+  }).join('');
+  h += '</div>';
+  if (ws.length > 40) h += '<div class="disclaimer">Showing the 40 most recent of ' + ws.length + ' sessions in range.</div>';
+  return h;
+}
+function setWoRange(r) { woRange = r; render(); }
+
+function woDetail(i) {
+  const w = woInRange()[i]; if (!w) return;
+  const rows = [];
+  if (w.dur) rows.push(['Duration', dur(w.dur)]);
+  if (w.dist) rows.push(['Distance', fmt(dDist(w.dist), 2) + ' ' + uDist()]);
+  if (w.kcal) rows.push(['Active energy', w.kcal + ' kcal']);
+  if (w.hravg) rows.push(['Avg heart rate', w.hravg + ' bpm']);
+  if (w.hrmax) rows.push(['Max heart rate', w.hrmax + ' bpm']);
+  const pace = E.paceMinKm(w);
+  if (pace) rows.push(['Pace', uDist() === 'mi' ? (pace * U.MI_KM).toFixed(1) + ' min/mi' : pace.toFixed(1) + ' min/km']);
+  if (w.spd) rows.push(['Avg speed', fmt(dDist(w.spd), 1) + ' ' + uDist() + '/h']);
+  if (w.elev) rows.push(['Elevation gain', w.elev + ' m']);
+  if (w.steps) rows.push(['Steps', w.steps.toLocaleString()]);
+  if (w.cad) rows.push(['Cadence', w.cad + ' spm']);
+  if (w.temp != null) rows.push(['Temperature', w.temp + '°C']);
+  if (typeof w.indoor === 'boolean') rows.push(['Location', w.indoor ? 'Indoor' : 'Outdoor']);
+
+  openModal('<h3>' + esc(w.name) + '</h3><div class="mdsub">' + esc(niceDate(w.d)) + ' · ' + esc(w.start.slice(11)) + '</div>' +
+    rows.map(([k, v]) => '<div class="srow"><div><div class="sl">' + esc(k) + '</div></div>' +
+      '<div style="font-weight:700">' + esc(v) + '</div></div>').join('') +
+    '<button class="btn ghost wide" onclick="closeModal()">Close</button>');
+}
+
+function drawWorkoutChart() {
+  const cv = $('wchart'); if (!cv || !window.Chart) return;
+  const ws = woInRange(); if (!ws.length) return;
+  const buckets = {};
+  ws.forEach(w => { const k = U.weekStart(w.d); buckets[k] = (buckets[k] || 0) + (w.dur || 0) / 60; });
+  const keys = Object.keys(buckets).sort();
+  // Keep the bar chart readable: beyond ~26 weeks the bars become hairlines.
+  const show = keys.slice(-26);
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue('--accent').trim() || '#3a7d6e';
+  const muted = css.getPropertyValue('--muted').trim() || '#6b7787';
+  const line = css.getPropertyValue('--line').trim() || '#e2e7ec';
+  charts.push(new Chart(cv, {
+    type: 'bar',
+    data: { labels: show, datasets: [{ label: 'min', data: show.map(k => Math.round(buckets[k])), backgroundColor: accent, borderRadius: 3 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { title: it => 'Week of ' + niceDate(it[0].label), label: it => it.parsed.y + ' min' } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: muted, maxTicksLimit: 6, font: { size: 10 }, callback: function (v) { const d = this.getLabelForValue(v); return d ? d.slice(5) : ''; } } },
+        y: { grid: { color: line }, ticks: { color: muted, font: { size: 10 }, maxTicksLimit: 4 }, beginAtZero: true }
+      }
+    }
+  }));
+}
+
+/* ── SETTINGS ────────────────────────────────────────────────────────── */
+function viewSettings() {
+  const n = Object.keys(data.daily).length;
+  const q = {};
+  Object.values(data.daily).forEach(r => { const f = r.q || 'ok'; q[f] = (q[f] || 0) + 1; });
+  const scored = derived ? Object.keys(derived.readiness).length : 0;
+  const ld = latestDate();
+
+  let h = '';
+  h += '<div class="card"><div class="card-title">Your data</div>' +
+    '<div class="srow"><div><div class="sl">Days on file</div>' +
+    '<div class="sd">' + (n ? derived.dates[0] + ' to ' + ld : 'nothing imported yet') + '</div></div>' +
+    '<div style="font-weight:750">' + n.toLocaleString() + '</div></div>' +
+    '<div class="srow"><div><div class="sl">Days with a readiness score</div>' +
+    '<div class="sd">Needs sleep, resting HR and HRV on the same day</div></div>' +
+    '<div style="font-weight:750">' + scored.toLocaleString() + '</div></div>' +
+    '<div class="srow"><div><div class="sl">Workouts</div>' +
+    '<div class="sd">From the Workout Backup export</div></div>' +
+    '<div style="font-weight:750">' + data.workouts.length.toLocaleString() + '</div></div>' +
+    '</div>';
+
+  if (n) {
+    const qrows = Object.entries(q).sort((a, b) => b[1] - a[1]).map(([k, v]) =>
+      '<div class="srow"><div><div class="sl">' + esc(k === 'ok' ? 'Complete days' : k) + '</div></div>' +
+      '<div style="font-weight:700;color:var(--muted)">' + v.toLocaleString() + '</div></div>').join('');
+    h += '<div class="card"><div class="card-title">Data quality</div>' +
+      '<div class="v-ctx" style="margin-bottom:8px">Gaps are surfaced, never filled in. Most watch-off days are ' +
+      'from the years before you wore the watch overnight.</div>' + qrows + '</div>';
+  }
+
+  h += '<div class="card"><div class="card-title">Units</div>' +
+    unitRow('Weight', 'weight', [['lb', 'lb'], ['kg', 'kg']]) +
+    unitRow('Distance', 'distance', [['mi', 'mi'], ['km', 'km']]) +
+    '</div>';
+
+  h += '<div class="card"><div class="card-title">Import and backup</div>' +
+    '<div class="srow"><div><div class="sl">Import data file</div>' +
+    '<div class="sd">A health-data.json built by tools/build-fixture.mjs, or a backup exported from this app. ' +
+    'Merges by date; nothing is overwritten blindly.</div></div></div>' +
+    '<input type="file" id="fileIn" accept="application/json,.json" style="display:none" onchange="onImport(event)">' +
+    '<button class="btn wide" onclick="document.getElementById(\'fileIn\').click()">Choose file</button>' +
+    '<button class="btn ghost wide" onclick="doExport()">Export a backup</button>' +
+    '</div>';
+
+  h += '<div class="card"><div class="card-title">About</div>' +
+    '<div class="srow"><div><div class="sl">App version</div></div><div style="color:var(--muted)">' + APP_VERSION + '</div></div>' +
+    '<div class="srow"><div><div class="sl">Engine version</div>' +
+    '<div class="sd">Baselines and readiness ported 1:1 from the reviewed Python pipeline</div></div>' +
+    '<div style="color:var(--muted)">' + esc(E.VERSION) + '</div></div>' +
+    '<div class="srow"><div><div class="sl">Where your data lives</div>' +
+    '<div class="sd">On this device in browser storage, and in your own Google Drive once sync is connected. ' +
+    'It is never sent to any health service or third party.</div></div></div>' +
+    '</div>';
+
+  if (n) {
+    h += '<div class="card"><div class="card-title">Danger zone</div>' +
+      '<div class="srow"><div><div class="sl">Clear all data on this device</div>' +
+      '<div class="sd">Removes the local copy only. Export a backup first.</div></div>' +
+      '<button class="btn" style="background:var(--alert)" onclick="confirmWipe()">Clear</button></div></div>';
+  }
+
+  h += '<div class="disclaimer">This app surfaces patterns in your own data. It does not diagnose, ' +
+    'and it is not a substitute for professional medical advice.</div>';
+  return h;
+}
+function unitRow(label, key, opts) {
+  return '<div class="srow"><div><div class="sl">' + esc(label) + '</div></div><div class="seg">' +
+    opts.map(([v, l]) => '<button class="' + (data.settings.units[key] === v ? 'on' : '') + '" ' +
+      'onclick="setUnit(\'' + key + '\',\'' + v + '\')">' + esc(l) + '</button>').join('') + '</div></div>';
+}
+function setUnit(k, v) { data.settings.units[k] = v; data.settings.updatedAt = Date.now(); saveLocal(); render(); }
+
+/* ── Import / export ─────────────────────────────────────────────────── */
+function onImport(ev) {
+  const f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    let inc;
+    try { inc = JSON.parse(rd.result); }
+    catch (e) { toast('⚠️ That file is not valid JSON'); ev.target.value = ''; return; }
+    try { applyImport(inc); }
+    catch (e) { console.error(e); toast('⚠️ Import failed: ' + e.message); }
+    ev.target.value = '';
+  };
+  rd.readAsText(f);
+}
+
+/** Merge an incoming payload into the local store. Import is additive by date:
+ *  an existing day is replaced only by a newer row, so importing an older
+ *  backup can never roll back days you already have. */
+function applyImport(inc) {
+  if (!inc || typeof inc !== 'object' || !inc.daily) throw new Error('no daily data in that file');
+  const before = Object.keys(data.daily).length;
+  let added = 0, updated = 0;
+  for (const d in inc.daily) {
+    const row = inc.daily[d];
+    if (!row || typeof row !== 'object') continue;
+    const cur = data.daily[d];
+    if (!cur) { data.daily[d] = row; added++; }
+    else if ((row.u || 0) > (cur.u || 0)) { data.daily[d] = row; updated++; }
+  }
+  if (Array.isArray(inc.workouts)) {
+    const seen = new Set(data.workouts.map(w => w.id));
+    let wAdded = 0;
+    for (const w of inc.workouts) if (w && w.id && !seen.has(w.id)) { data.workouts.push(w); seen.add(w.id); wAdded++; }
+    data.meta = Object.assign({}, data.meta, { lastImportWorkouts: wAdded });
+  }
+  if (inc.settings && inc.settings.units && (inc.settings.updatedAt || 0) > (data.settings.updatedAt || 0)) {
+    data.settings = Object.assign({}, data.settings, inc.settings);
+  }
+  data.meta = Object.assign({}, data.meta, { lastImport: new Date().toISOString() });
+  saveLocal(); recompute(); render();
+  toast('✅ ' + added + ' new day' + (added === 1 ? '' : 's') + (updated ? ', ' + updated + ' updated' : '') +
+    ' (was ' + before.toLocaleString() + ')');
+}
+
+function doExport() {
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'health-data-backup-' + todayISO() + '.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast('✅ Backup downloaded');
+}
+
+function confirmWipe() {
+  openModal('<h3>Clear all data?</h3>' +
+    '<div class="mdsub">This removes every day and workout from this device. Your Google Drive copy and the ' +
+    'original export files are not touched, but there is no undo here.</div>' +
+    '<button class="btn ghost wide" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn wide" style="background:var(--alert)" onclick="doWipe()">Yes, clear it</button>');
+}
+function doWipe() {
+  data = clone(DEF); saveLocal(); recompute(); closeModal(); sv('settings');
+  toast('Local data cleared');
+}
+
+/* ── Modal / toast ───────────────────────────────────────────────────── */
+function openModal(html) { $('MD').innerHTML = html; $('MO').classList.remove('hidden'); }
+function closeModal() { $('MO').classList.add('hidden'); }
+function handleOC(e) { if (e.target.id === 'MO') closeModal(); }
+let toastT;
+function toast(msg) {
+  const t = $('T'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+/* ── Init ────────────────────────────────────────────────────────────── */
+function init() {
+  loadLocal();
+  recompute();
+  render();
+  // The stale-while-revalidate worker is what makes the deployed app open
+  // instantly, but on localhost it serves yesterday's shell and every edit looks
+  // like it did nothing. Register it only where it earns its keep.
+  const isDev = ['localhost', '127.0.0.1', '::1'].indexOf(location.hostname) !== -1;
+  if ('serviceWorker' in navigator && !isDev) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  } else if (isDev && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
+    if (window.caches) caches.keys().then(ks => ks.forEach(k => caches.delete(k)));
+  }
+}
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

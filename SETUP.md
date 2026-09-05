@@ -6,13 +6,25 @@ Four steps. Steps 1 and 2 need your hands; 3 and 4 are commands you can paste.
 
 ## 1. Create the GitHub repo and turn on Pages
 
-The app is not deployed yet. Nothing has been pushed anywhere.
+The app is not deployed yet. Nothing has been pushed anywhere. The `gh` CLI is
+not installed on this machine and there is no stored GitHub API token, so the
+repo has to be created from the browser — but only the creation does.
+
+1. Go to **https://github.com/new**
+2. Name it exactly **`health-tracker`**, owner `raffytanpho-debug`
+3. **Public** (GitHub Pages on a private repo needs a paid plan)
+4. Do **not** add a README, .gitignore or licence — the repo already has commits
+   and an initialising commit would force a merge
+5. Create it
+
+Then push from here (git's credential helper already has your GitHub login, so
+this needs no token):
 
 ```bash
-gh repo create health-tracker --public --source=C:/dev/health-tracker --remote=origin --push
+cd C:/dev/health-tracker && git remote add origin https://github.com/raffytanpho-debug/health-tracker.git && git push -u origin main
 ```
 
-Then in the repo: **Settings → Pages → Source: Deploy from a branch → `main` / `(root)`**.
+Finally: **repo → Settings → Pages → Source: Deploy from a branch → `main` / `(root)`**.
 
 It will be live at `https://raffytanpho-debug.github.io/health-tracker/`.
 
@@ -105,19 +117,24 @@ Check it before automating it:
 cd C:/dev/health-tracker && node tools/sync-to-drive.mjs --dry-run
 ```
 
-Then create the scheduled task (runs at 06:30 daily, and catches up if the
-machine was asleep):
+**The scheduled task is already registered** — "Health Tracker Drive Sync",
+daily at 06:30, running `C:\Program Files\nodejs\node.exe tools/sync-to-drive.mjs`
+from `C:\dev\health-tracker`. It was test-fired on 2026-09-05 and correctly
+failed with "No session id", which confirms the node path, working directory and
+script path are all wired right. It will start doing real work the moment the
+session id above exists, with no further setup.
+
+`-DontStopIfGoingOnBatteries` and `-AllowStartIfOnBatteries` were set
+deliberately: a task that silently refuses to run on battery while still
+reporting its last result as success is a known way for a sync to look healthy
+while doing nothing.
+
+To change the time, or to remove it:
 
 ```powershell
-$action  = New-ScheduledTaskAction -Execute "node" -Argument "tools/sync-to-drive.mjs" -WorkingDirectory "C:\dev\health-tracker"
-$trigger = New-ScheduledTaskTrigger -Daily -At 6:30am
-$set     = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
-Register-ScheduledTask -TaskName "Health Tracker Drive Sync" -Action $action -Trigger $trigger -Settings $set -Description "Parses Health Auto Export files and pushes health-data.json to Drive for the Health Tracker PWA."
+Get-ScheduledTask -TaskName "Health Tracker Drive Sync"
+Unregister-ScheduledTask -TaskName "Health Tracker Drive Sync" -Confirm:$false
 ```
-
-`-DontStopIfGoingOnBatteries` and `-AllowStartIfOnBatteries` are deliberate: a
-task that silently refuses to run on battery while still reporting its last
-result as success is a known way for a sync to look healthy while doing nothing.
 
 **Verify it by what it produced, not by its exit status.** After the first
 scheduled run:

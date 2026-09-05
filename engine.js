@@ -22,11 +22,48 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const VERSION = '2026.09.04';
+  const VERSION = '2026.09.05';
 
   // ───────────────────────── helpers ─────────────────────────
   const isNum = v => typeof v === 'number' && Number.isFinite(v);
-  const round = (v, d) => (v == null ? null : Math.round(v * Math.pow(10, d)) / Math.pow(10, d));
+  /* Round half to EVEN, matching Python's built-in round().
+   *
+   * The Python pipeline is the reference implementation this engine has to
+   * reproduce, and it rounds ties to the even neighbour. Math.round rounds ties
+   * away from zero, which disagreed on 212 of 18,284 compared values. Almost all
+   * of them were SpO2 and respiratory-rate medians: both are medians of integer
+   * or 1-decimal readings, so an even-length list whose two middle values differ
+   * by one lands exactly on a tie, which is why ~10% of SpO2 days were off by a
+   * whole point rather than a rounding crumb.
+   *
+   * Ties are only treated as ties when the scaled value is exactly .5. Anything
+   * that merely looks like 2.675 in decimal is really 2.67499... as a double, and
+   * both languages round it down for the same reason. */
+  const round = (v, d) => {
+    if (v == null) return null;
+    if (!Number.isFinite(v)) return v;
+    const neg = v < 0, a = Math.abs(v);
+    // Work from the decimal expansion, NOT from a * 10^d. Scaling by a power of
+    // ten manufactures ties that are not really there: 14.35 is stored as
+    // 14.34999999999999964..., but 14.35 * 10 lands exactly on 143.5, so a
+    // scaled comparison sees a tie and rounds the wrong way. toFixed rounds the
+    // true value of the double, so the digits past position d tell us which side
+    // of the tie we are actually on.
+    const s = a.toFixed(Math.min(20, d + 18));
+    const dot = s.indexOf('.');
+    const digits = s.slice(0, dot) + s.slice(dot + 1);
+    const keep = dot + d;
+    const head = digits.slice(0, keep), tail = digits.slice(keep);
+    const first = tail.charCodeAt(0) - 48;
+    let up;
+    if (first > 5) up = true;
+    else if (first < 5) up = false;
+    else if (/[1-9]/.test(tail.slice(1))) up = true;          // strictly past the tie
+    else up = ((head.charCodeAt(head.length - 1) - 48) % 2) === 1; // true tie -> even
+    const n = Number(head) + (up ? 1 : 0);
+    const r = n / Math.pow(10, d);
+    return neg ? -r : r;
+  };
   const mean = xs => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
   const sum = xs => (xs.length ? xs.reduce((a, b) => a + b, 0) : null);
   function median(xs) {
@@ -144,7 +181,9 @@
     const ws = median(qtys(pts(m, 'walking_speed')));
     set('wspeed', ws == null ? null : toKmh(ws, unitOf(m, 'walking_speed')), 2);
     const wt = mean(qtys(pts(m, 'weight_body_mass'), 'zepp'));
-    set('wt', wt == null ? null : toKg(wt, unitOf(m, 'weight_body_mass')), 2);
+    // 3dp, not 2: weight arrives in lb and is stored in kg, so a coarse kg grid
+    // shows up as visible drift when it is converted back for display.
+    set('wt', wt == null ? null : toKg(wt, unitOf(m, 'weight_body_mass')), 3);
     set('bmi', mean(qtys(pts(m, 'body_mass_index'), 'zepp')), 1);
     set('bf', mean(qtys(pts(m, 'body_fat_percentage'), 'zepp')), 1);
     const lean = mean(qtys(pts(m, 'lean_body_mass'), 'zepp'));

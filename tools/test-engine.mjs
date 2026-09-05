@@ -84,7 +84,10 @@ console.log('== parser ==');
   check('bedtime before midnight negative', r.bed === -50 && r.wake === 400, r.bed + '/' + r.wake);
   check('steps summed & rounded', r.steps === 3500);
   check('distance mi -> km', r.dist === 3.22, r.dist);
-  check('weight prefers Zepp, lb -> kg', r.wt === 77.11, r.wt);
+  // 3dp: 170 lb -> 77.1107029 kg. Stored at 2dp the value drifted by ~0.06 lb
+  // once converted back for display, which was the last weight mismatch against
+  // the Python pipeline.
+  check('weight prefers Zepp, lb -> kg', r.wt === 77.111, r.wt);
   check('wrist temp F -> C', r.wtemp === 36, r.wtemp);
   check('resp median 1dp', r.resp === 14.3);
   check('flags: none (has sleep/hrv/rhr)', r.q === '', r.q);
@@ -169,8 +172,35 @@ if (process.argv.includes('--compare')) {
   for (const m of rmiss) console.log('   ', m.join(' | '));
   const total = Object.values(stats).filter((s, i) => Object.keys(stats)[i] !== 'readiness').reduce((a, s) => a + s.n, 0);
   const totalOk = Object.values(stats).filter((s, i) => Object.keys(stats)[i] !== 'readiness').reduce((a, s) => a + s.ok, 0);
-  check('>= 99.5% of compared values within tolerance', total && totalOk / total >= 0.995, `${totalOk}/${total}`);
-  check('>= 99% readiness state parity', rn && rok / rn >= 0.99, `${rok}/${rn}`);
+  /* KNOWN DIVERGENCE — asserted, not tolerated.
+   *
+   * 2025-05-18 is the one date where this engine deliberately disagrees with the
+   * Python pipeline, and it disagrees by being right. That day's export carries
+   * two sleep_analysis records: an AutoSleep daytime nap (core/deep/rem all 0)
+   * and the Apple Watch's actual night (core 5.08 + rem 1.34 + deep 0.38).
+   * build_daily_summary.py takes sp_pts[0] unconditionally, lands on the nap,
+   * computes a total of 0 and discards the night as "partial:sleep". This engine
+   * prefers the watch record, so it keeps the real 6.81 hours.
+   *
+   * The knock-on matters more than the single day: because Python flags 05-18 as
+   * partial it drops that day from every baseline window covering it, which is
+   * why a few readiness days differ too. Asserting the specific date means a
+   * change that silently reintroduces Python's behaviour fails loudly instead of
+   * quietly widening a threshold.
+   */
+  const div = seed.daily['2025-05-18'];
+  check('known divergence 2025-05-18: JS keeps the watch night Python dropped',
+    !!div && Math.abs(div.slp - 6.81) < 0.01 && !(div.q || '').includes('partial'),
+    JSON.stringify(div && { slp: div.slp, q: div.q }));
+  check('the sleep divergence is exactly one date',
+    stats.slp.nullMismatch === 1, `slp nullMismatch=${stats.slp.nullMismatch}`);
+
+  // Thresholds sit just under the achieved figures so a regression trips them.
+  // They were 99.5% / 99% while this engine used JS half-up rounding against
+  // Python's half-to-even; that gap is closed, so the bar moves up with it.
+  check('>= 99.9% of compared values within tolerance', total && totalOk / total >= 0.999, `${totalOk}/${total}`);
+  check('>= 99.5% readiness state parity', rn && rok / rn >= 0.995, `${rok}/${rn}`);
+  check('>= 99% readiness score parity', rn && sok / rn >= 0.99, `${sok}/${rn}`);
 }
 
 console.log(`\n${passes} passed, ${fails} failed`);

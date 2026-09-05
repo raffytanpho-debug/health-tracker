@@ -415,17 +415,26 @@ function emptyState() {
     '<button class="btn" style="margin-top:18px" onclick="sv(\'settings\')">Open Settings</button></div>';
 }
 
+/* ── Data health ─────────────────────────────────────────────────────
+   Recomputed per render rather than cached: it is cheap, and a cached copy
+   would go on reporting "all clear" after a sync brought in something new. */
+function dataIssues() {
+  if (!derived || !derived.dates.length) return [];
+  try { return E.dataHealth(data.daily, derived.dates, todayISO()); }
+  catch (e) { console.error('dataHealth failed', e); return []; }
+}
+
 /* ── TODAY ───────────────────────────────────────────────────────────── */
 function viewToday() {
   const sd = latestScoredDate(), ld = latestDate();
   let h = '';
 
-  // Staleness is stated plainly rather than smoothed over: a dashboard showing
-  // four-day-old numbers as if they were today's is worse than no dashboard.
-  const ago = ld ? daysAgo(ld) : null;
-  if (ago != null && ago > 2) {
-    h += '<div class="banner warn">Latest data is from ' + esc(niceDate(ld)) + ' (' + ago + ' days ago). ' +
-      'Health Auto Export may not have run, or the sync has not picked it up yet.</div>';
+  // Data-health issues are stated plainly rather than smoothed over: a dashboard
+  // showing four-day-old numbers as if they were today's, or confident numbers
+  // over a signal that has quietly thinned, is worse than no dashboard. Only
+  // warn-level issues interrupt Today; the full picture lives in Settings.
+  for (const issue of dataIssues().filter(i => i.level === 'warn')) {
+    h += '<div class="banner warn"><strong>' + esc(issue.title) + '</strong><br>' + esc(issue.detail) + '</div>';
   }
 
   if (!sd) {
@@ -861,6 +870,21 @@ function viewSettings() {
     '<div class="sd">From the Workout Backup export</div></div>' +
     '<div style="font-weight:750">' + data.workouts.length.toLocaleString() + '</div></div>' +
     '</div>';
+
+  if (n) {
+    const issues = dataIssues();
+    h += '<div class="card"><div class="card-title">Data health</div>';
+    if (!issues.length) {
+      h += '<div class="v-ctx">Nothing to flag. Data is arriving on schedule, at its usual level of detail, ' +
+        'and no metric has gone quiet.</div>';
+    } else {
+      h += issues.map(i =>
+        '<div class="vital"><div class="v-top"><span class="v-name" style="color:' +
+        (i.level === 'warn' ? 'var(--warm)' : 'var(--blue)') + '">' + esc(i.title) + '</span></div>' +
+        '<div class="v-ctx">' + esc(i.detail) + '</div></div>').join('');
+    }
+    h += '</div>';
+  }
 
   if (n) {
     const qrows = Object.entries(q).sort((a, b) => b[1] - a[1]).map(([k, v]) =>

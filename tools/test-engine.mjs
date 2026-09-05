@@ -63,6 +63,61 @@ console.log('== baseline window ==');
   check('partial days excluded -> too thin -> no baseline', b2.rhr_base === undefined, JSON.stringify(b2));
 }
 
+console.log('== data health ==');
+{
+  // Build 400 days of "good" history: ~260 heart-rate readings a day.
+  const mk = (nDays, nhrFn, extra) => {
+    const rows = {}, start = '2025-06-01';
+    for (let k = 0; k < nDays; k++) {
+      const d = E.util.addDays(start, k);
+      rows[d] = Object.assign({ d, nhr: nhrFn(k), slp: 7, rhr: 55, hrv: 50, resp: 14, steps: 6000, spo2: 97, q: '' }, extra ? extra(k, d) : {});
+    }
+    return rows;
+  };
+  const dates = r => Object.keys(r).sort();
+
+  // steady history -> nothing to report
+  const good = mk(400, () => 250 + (k => 0)());
+  const gd = dates(good);
+  const okIssues = E.dataHealth(good, gd, gd[gd.length - 1]);
+  check('steady data -> no issues', okIssues.length === 0, JSON.stringify(okIssues.map(i => i.id)));
+
+  // granularity cliff at day 340 -> flagged, with the right changeover date
+  const coarse = mk(400, k => (k < 340 ? 250 : 1));
+  const cd = dates(coarse);
+  const ci = E.dataHealth(coarse, cd, cd[cd.length - 1]);
+  const gran = ci.find(i => i.id === 'granularity');
+  check('granularity drop is flagged', !!gran, JSON.stringify(ci.map(i => i.id)));
+  check('granularity names the changeover day', gran && gran.since === E.util.addDays('2025-06-01', 339), gran && gran.since);
+  // the cliff must still be found once the coarse stretch is long: this is the
+  // case a "recent vs previous window" comparison silently misses, because both
+  // windows sit after the change.
+  const longCoarse = mk(400, k => (k < 200 ? 250 : 1));
+  const ld = dates(longCoarse);
+  check('long coarse stretch still flagged', !!E.dataHealth(longCoarse, ld, ld[ld.length - 1]).find(i => i.id === 'granularity'));
+
+  // freshness
+  const fd = dates(good);
+  const stale = E.dataHealth(good, fd, E.util.addDays(fd[fd.length - 1], 5)).find(i => i.id === 'stale');
+  check('5 days behind -> warn', stale && stale.level === 'warn', JSON.stringify(stale));
+  const two = E.dataHealth(good, fd, E.util.addDays(fd[fd.length - 1], 2)).find(i => i.id === 'stale');
+  check('2 days behind -> info, not warn', two && two.level === 'info', JSON.stringify(two));
+  check('1 day behind -> silent', !E.dataHealth(good, fd, E.util.addDays(fd[fd.length - 1], 1)).find(i => i.id === 'stale'));
+
+  // A metric that stops arriving. The gap has to cover the whole 30-day recent
+  // window: a metric missing for only a couple of weeks is deliberately not
+  // flagged yet, so a short export hiccup does not raise an alarm.
+  const dropped = mk(400, () => 250, k => (k >= 365 ? { spo2: null } : {}));
+  for (const d in dropped) if (dropped[d].spo2 === null) delete dropped[d].spo2;
+  const dd = dates(dropped);
+  const drop = E.dataHealth(dropped, dd, dd[dd.length - 1]).find(i => i.id === 'dropout:spo2');
+  check('a metric that stops arriving is flagged', !!drop, JSON.stringify(E.dataHealth(dropped, dd, dd[dd.length - 1]).map(i => i.id)));
+  // sparse-by-nature metrics must not nag: weight present on only 30% of days
+  const sparse = mk(400, () => 250, k => (k % 3 === 0 ? { wt: 77 } : {}));
+  const sd2 = dates(sparse);
+  check('naturally sparse metric does not nag', !E.dataHealth(sparse, sd2, sd2[sd2.length - 1]).find(i => i.id === 'dropout:wt'));
+}
+
 console.log('== parser ==');
 {
   const doc = { data: { metrics: [

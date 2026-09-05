@@ -502,6 +502,98 @@
     return { r: dx && dy ? num / Math.sqrt(dx * dy) : null, n };
   }
 
+  /* ───────────────────────── data health ─────────────────────────
+   * These watch the SHAPE of the incoming data rather than its values.
+   *
+   * The reason they exist: in mid-2026 the export silently dropped from ~260
+   * heart-rate samples per day to exactly 1, and it went unnoticed for three
+   * months because every daily number still looked completely normal. Readiness,
+   * baselines and trends were all fine. What quietly disappeared was every
+   * within-day detail, and no view had any reason to mention it.
+   *
+   * A tracker that cannot notice its own input degrading will happily report
+   * confident numbers over a thinning signal, so these checks are deliberately
+   * about provenance, not physiology. `today` is passed in rather than read from
+   * the clock so this stays a pure function and can be tested.
+   */
+  const DROPOUT_WATCH = [
+    ['slp', 'sleep'], ['rhr', 'resting heart rate'], ['hrv', 'HRV'],
+    ['resp', 'respiratory rate'], ['steps', 'steps'], ['spo2', 'blood oxygen'], ['wt', 'weight']
+  ];
+
+  function percentile(sorted, p) {
+    if (!sorted.length) return null;
+    return sorted[Math.floor((sorted.length - 1) * p)];
+  }
+
+  function dataHealth(rows, dates, today) {
+    const out = [];
+    if (!dates || !dates.length) return out;
+    const last = dates[dates.length - 1];
+
+    // 1. Freshness. Stated as a fact about the export, not as an app error.
+    if (today) {
+      const age = daysBetween(last, today);
+      if (age >= 3) out.push({
+        id: 'stale', level: 'warn', since: last,
+        title: 'No new data for ' + age + ' days',
+        detail: 'The most recent day on file is ' + last + '. Health Auto Export may not have run on your phone, or the sync has not picked it up yet.'
+      });
+      else if (age === 2) out.push({
+        id: 'stale', level: 'info', since: last,
+        title: 'Data is two days behind',
+        detail: 'The most recent day on file is ' + last + '. One missed export is normal; several in a row is worth checking.'
+      });
+    }
+
+    // 2. Granularity. Compared against a high percentile of the whole history
+    //    rather than against the immediately preceding window, because once a
+    //    coarse stretch runs longer than that window the comparison straddles
+    //    the change and the drop hides itself.
+    const withN = dates.filter(d => rows[d] && rows[d].nhr != null);
+    if (withN.length >= 60) {
+      const ref = percentile(withN.map(d => rows[d].nhr).sort((a, b) => a - b), 0.75);
+      const recent = median(withN.slice(-14).map(d => rows[d].nhr));
+      if (ref != null && ref >= 20 && recent != null && recent <= ref * 0.25) {
+        let changed = null;
+        for (let i = withN.length - 1; i >= 0; i--) {
+          if (rows[withN[i]].nhr >= ref * 0.5) { changed = withN[i]; break; }
+        }
+        out.push({
+          id: 'granularity', level: 'warn', since: changed,
+          title: 'Your export is arriving much coarser',
+          detail: 'Days used to arrive with around ' + Math.round(ref) + ' heart-rate readings; recent days have about ' +
+            Math.round(recent) + '.' + (changed ? ' That changed around ' + changed + '.' : '') +
+            ' Daily trends and readiness are unaffected, but within-day detail is no longer being exported. ' +
+            'This is a setting in the Health Auto Export app on your phone, not in this one.'
+        });
+      }
+    }
+
+    // 3. A metric that used to arrive and stopped. Thresholds are wide on
+    //    purpose: naturally sparse metrics (VO2 max, weigh-ins) must not nag.
+    if (dates.length >= 160) {
+      const recentW = dates.slice(-30), priorW = dates.slice(-160, -30);
+      for (const [k, label] of DROPOUT_WATCH) {
+        const pr = priorW.filter(d => rows[d][k] != null).length / priorW.length;
+        const rr = recentW.filter(d => rows[d][k] != null).length / recentW.length;
+        if (pr >= 0.6 && rr < 0.1) {
+          let lastSeen = null;
+          for (let i = dates.length - 1; i >= 0; i--) if (rows[dates[i]][k] != null) { lastSeen = dates[i]; break; }
+          out.push({
+            id: 'dropout:' + k, level: 'warn', since: lastSeen,
+            title: label.charAt(0).toUpperCase() + label.slice(1) + ' has stopped arriving',
+            detail: 'It was present on ' + Math.round(pr * 100) + '% of days a few months ago and ' +
+              Math.round(rr * 100) + '% of the last 30.' + (lastSeen ? ' Last seen ' + lastSeen + '.' : '') +
+              ' Check that the metric is still enabled in Health Auto Export.'
+          });
+        }
+      }
+    }
+
+    return out;
+  }
+
   // Workout type -> family for grouping/icons
   function workoutFamily(name) {
     const n = (name || '').toLowerCase();
@@ -524,6 +616,7 @@
     parseWorkout, parseWorkoutFile, hrZones,
     computeBaselines, computeReadiness, deriveAll,
     lastN, avgOf, sumOf, weightAvg, countBelow, weeklyRollup, monthlyAvg, pearson, workoutFamily, paceMinKm,
+    dataHealth,
     util: { mean, median, mad, round, addDays, daysBetween, dow, weekStart, isNum, toKg, toKm, toKmh, toC, LB_KG, MI_KM, dateOf, hhmm }
   };
 });

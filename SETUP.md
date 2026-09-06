@@ -118,7 +118,7 @@ cd C:/dev/health-tracker && node tools/sync-to-drive.mjs --dry-run
 ```
 
 **The scheduled task is already registered** — "Health Tracker Drive Sync",
-daily at 06:30, running `C:\Program Files\nodejs\node.exe tools/sync-to-drive.mjs`
+daily at 09:00, running `C:\Program Files\nodejs\node.exe tools/sync-to-drive.mjs`
 from `C:\dev\health-tracker`. It was test-fired on 2026-09-05 and correctly
 failed with "No session id", which confirms the node path, working directory and
 script path are all wired right. It will start doing real work the moment the
@@ -148,12 +148,12 @@ Every run appends two or more lines, timestamped in local time with an offset.
 A healthy morning looks like either of these:
 
 ```
-2026-09-06 06:30:01 +0800 Export folder: 3656 daily files (0 new/changed), ...
-2026-09-06 06:30:01 +0800 Nothing changed since the last run. Exiting without touching Drive.
+2026-09-07 09:00:01 +0800 Export folder: 3657 daily files (0 new/changed), ...
+2026-09-07 09:00:01 +0800 Nothing changed since the last run. Exiting without touching Drive.
 ```
 ```
-2026-09-06 06:30:01 +0800 Export folder: 3656 daily files (2 new/changed), ...
-2026-09-06 06:30:08 +0800 Uploaded 1054 KB. Days 3622 -> 3623 (+1 new, 2 refreshed). ...
+2026-09-07 09:00:01 +0800 Export folder: 3657 daily files (2 new/changed), ...
+2026-09-07 09:00:08 +0800 Uploaded 1054 KB. Days 3623 -> 3624 (+1 new, 2 refreshed). ...
 ```
 
 **The two checks that look obvious and are wrong:**
@@ -173,9 +173,11 @@ The absence of a log line for a given morning is the real failure signal, and
 Get-ScheduledTaskInfo -TaskName "Health Tracker Drive Sync" | Select LastRunTime, LastTaskResult, NextRunTime
 ```
 
-Note the export often arrives *after* 06:30 (07:55 on the first morning), so a
-same-day file will usually be picked up the following morning rather than the
-same one. That is the export's timing, not a sync fault.
+The task was moved from 06:30 to **09:00** on 2026-09-06 for exactly this
+reason: the phone's export landed at 07:55 that morning, after the 06:30 run,
+so the day's data would always have waited until the next day. At 09:00 it is
+normally picked up the same morning. If your export starts arriving later,
+move the trigger rather than assuming the sync broke.
 
 ---
 

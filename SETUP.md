@@ -136,14 +136,46 @@ Get-ScheduledTask -TaskName "Health Tracker Drive Sync"
 Unregister-ScheduledTask -TaskName "Health Tracker Drive Sync" -Confirm:$false
 ```
 
-**Verify it by what it produced, not by its exit status.** After the first
-scheduled run:
+### Checking it actually ran
+
+**Read `sync.log`. It is the only thing that answers the question.**
+
+```bash
+cd C:/dev/health-tracker && tail -6 sync.log
+```
+
+Every run appends two or more lines, timestamped in local time with an offset.
+A healthy morning looks like either of these:
+
+```
+2026-09-06 06:30:01 +0800 Export folder: 3656 daily files (0 new/changed), ...
+2026-09-06 06:30:01 +0800 Nothing changed since the last run. Exiting without touching Drive.
+```
+```
+2026-09-06 06:30:01 +0800 Export folder: 3656 daily files (2 new/changed), ...
+2026-09-06 06:30:08 +0800 Uploaded 1054 KB. Days 3622 -> 3623 (+1 new, 2 refreshed). ...
+```
+
+**The two checks that look obvious and are wrong:**
+
+- **`LastTaskResult: 0` proves nothing.** A run that did nothing at all exits 0,
+  and so does a run that correctly had nothing to do.
+- **`.sync-state.json`'s `lastRun` not moving proves nothing either.** State is
+  written only after a successful *upload*, so a correct no-op night leaves it
+  untouched. This tripped us up on the very first morning: the 06:30 run was
+  healthy, `lastRun` still read the previous evening, and it looked like a
+  failure until the file mtimes showed nothing had changed by 06:30.
+
+The absence of a log line for a given morning is the real failure signal, and
+`Get-ScheduledTaskInfo` is useful only for `LastRunTime` and `NextRunTime`:
 
 ```powershell
 Get-ScheduledTaskInfo -TaskName "Health Tracker Drive Sync" | Select LastRunTime, LastTaskResult, NextRunTime
 ```
 
-and confirm the `Days` count in the app's Settings actually moved.
+Note the export often arrives *after* 06:30 (07:55 on the first morning), so a
+same-day file will usually be picked up the following morning rather than the
+same one. That is the export's timing, not a sync fault.
 
 ---
 

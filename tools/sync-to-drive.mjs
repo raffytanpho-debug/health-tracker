@@ -55,8 +55,43 @@ const SRC = opt('--src', DEFAULT_SRC);
 const FULL = has('--full');
 const DRY = has('--dry-run');
 
-const log = (...a) => console.log(new Date().toISOString().slice(0, 19).replace('T', ' '), ...a);
-function die(msg, code = 1) { console.error('ERROR: ' + msg); process.exit(code); }
+/* Timestamps are LOCAL with an explicit offset, not UTC.
+ *
+ * This used to log UTC, which on this machine reads 8 hours behind every other
+ * timestamp you would compare it against -- file mtimes, Task Scheduler's
+ * LastRunTime, the Drive file's modifiedTime. A log that disagrees with the
+ * clock by a working day is worse than no log when you are trying to work out
+ * whether an unattended run actually happened. */
+function stamp() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  const off = -d.getTimezoneOffset(), sign = off >= 0 ? '+' : '-';
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ` +
+    `${sign}${p(Math.floor(Math.abs(off) / 60))}${p(Math.abs(off) % 60)}`;
+}
+
+/* Every run also appends to sync.log (gitignored). The scheduled task runs with
+ * nobody watching and its stdout goes nowhere, so without this the only evidence
+ * a run left behind is an exit code -- and an exit code cannot distinguish "there
+ * was nothing to do" from "it did nothing". */
+const LOG_PATH = path.join(ROOT, 'sync.log');
+function writeLog(line) {
+  try {
+    // Trim at ~256 KB so an unattended daily task cannot grow this without bound.
+    if (fs.existsSync(LOG_PATH) && fs.statSync(LOG_PATH).size > 262144) {
+      const keep = fs.readFileSync(LOG_PATH, 'utf8').split('\n').slice(-800).join('\n');
+      fs.writeFileSync(LOG_PATH, keep, 'utf8');
+    }
+    fs.appendFileSync(LOG_PATH, line + '\n', 'utf8');
+  } catch (e) { /* logging must never be the thing that breaks the sync */ }
+}
+
+const log = (...a) => { const line = stamp() + ' ' + a.join(' '); console.log(line); writeLog(line); };
+function die(msg, code = 1) {
+  const line = 'ERROR: ' + msg;
+  console.error(line); writeLog(stamp() + ' ' + line);
+  process.exit(code);
+}
 
 /* ── session bootstrap ─────────────────────────────────────────────────── */
 const sessionArg = opt('--session', null);

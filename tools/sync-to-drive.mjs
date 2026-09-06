@@ -225,6 +225,60 @@ async function findDataFile(tok) {
   return j.files && j.files.length ? j.files[0].id : null;
 }
 
+/* One rolling backup per day, newest 14 kept.
+ *
+ * This script is the primary writer now, so it has to make the backups. The app
+ * alone was not enough: it only backs up while it is open and syncing, and on
+ * 2026-09-05 the single backup on record was a 184-byte snapshot of an empty
+ * dataset, written on first connect before any data existed and then never
+ * replaced. Same two guards as the app -- never back up nothing, and never let a
+ * smaller payload overwrite a larger one for the same day. */
+const BACKUP_FOLDER = 'backups', BACKUP_KEEP = 14;
+
+async function backup(tok, folderId, payload, nDays) {
+  if (!nDays) { log('Backup skipped: nothing to back up.'); return; }
+  try {
+    const bId = await findFolder(tok, BACKUP_FOLDER, folderId);
+    const today = new Date();
+    const p = n => String(n).padStart(2, '0');
+    const name = `health-data-backup-${today.getFullYear()}-${p(today.getMonth() + 1)}-${p(today.getDate())}.json`;
+    const q = encodeURIComponent(`name='${name}' and '${bId}' in parents and trashed=false`);
+    const ex = await dj(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,size)`, { headers: hdr(tok) });
+    const existing = ex.files && ex.files[0];
+
+    if (existing) {
+      if (Number(existing.size || 0) > payload.length) { log('Backup kept: today\'s existing snapshot is larger.'); return; }
+      const r = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=media`,
+        { method: 'PATCH', headers: hdr(tok, { 'Content-Type': 'application/json' }), body: payload });
+      if (!r.ok) throw new Error('backup refresh failed ' + r.status);
+      log(`Backup refreshed: ${name} (${Math.round(payload.length / 1024)} KB).`);
+    } else {
+      const boundary = 'htb' + Date.now();
+      const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
+        JSON.stringify({ name, parents: [bId] }) +
+        `\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n` + payload + `\r\n--${boundary}--`;
+      await dj('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+        { method: 'POST', headers: hdr(tok, { 'Content-Type': `multipart/related; boundary=${boundary}` }), body });
+      log(`Backup written: ${name} (${Math.round(payload.length / 1024)} KB).`);
+    }
+
+    // Prune to the newest 14. Names sort chronologically, so a name sort is a date sort.
+    const lq = encodeURIComponent(`name contains 'health-data-backup-' and '${bId}' in parents and trashed=false`);
+    const lj = await dj(`https://www.googleapis.com/drive/v3/files?q=${lq}&fields=files(id,name)&orderBy=name desc`, { headers: hdr(tok) });
+    const old = (lj.files || []).slice(BACKUP_KEEP);
+    for (const f of old) {
+      await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}`, {
+        method: 'PATCH', headers: hdr(tok, { 'Content-Type': 'application/json' }), body: JSON.stringify({ trashed: true })
+      });
+    }
+    if (old.length) log(`Pruned ${old.length} backup(s) beyond the newest ${BACKUP_KEEP}.`);
+  } catch (e) {
+    // A failed backup must never fail the sync, but it must be loud in the log:
+    // a silent backup failure is how you find out the hard way.
+    log('WARNING: backup failed -', e.message);
+  }
+}
+
 async function main() {
   if (DRY) {
     log('DRY RUN — nothing will be uploaded.');
@@ -291,6 +345,11 @@ async function main() {
   const afterDays = Object.keys(remote.daily).length;
   log(`Uploaded ${kb} KB. Days ${beforeDays} -> ${afterDays} (+${added} new, ${updated} refreshed). ` +
       `Workouts ${beforeWo} -> ${remote.workouts.length} (+${woAdded}).`);
+
+  // Backup last, from the payload that was actually uploaded, so a snapshot can
+  // never be newer than the state it claims to back up.
+  await backup(tok, await findFolder(tok, DATA_FOLDER, null), payload, afterDays);
+
   log('Done. Open the app and it will pick this up on next launch.');
 }
 

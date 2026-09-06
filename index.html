@@ -1204,19 +1204,41 @@ async function drivePush() {
  *  Finance Tracker delete incident is why this exists at all. */
 async function driveBackup() {
   try {
+    // Two guards, both learned the hard way on 2026-09-05.
+    //
+    // 1. Never back up an empty dataset. On a first connect this function runs
+    //    before any data exists, and without this it writes a 184-byte snapshot
+    //    of nothing.
+    // 2. Refresh the day's backup instead of skipping it, but never let a
+    //    SMALLER payload replace a larger one. The original "already backed up
+    //    today" early-return meant the first sync of the day won permanently --
+    //    so the empty first-connect snapshot survived the 1 MB import that
+    //    followed eight seconds later, and the only backup on record held
+    //    nothing at all.
+    const nDays = Object.keys(data.daily || {}).length;
+    if (!nDays) return;
+    const payload = JSON.stringify(data);
+
     const folderId = await dataFolderId();
     const bId = await findOrCreateFolder(BACKUP_FOLDER, folderId);
     const name = 'health-data-backup-' + todayISO() + '.json';
     const q = encodeURIComponent("name='" + name + "' and '" + bId + "' in parents and trashed=false");
-    const ex = await driveJSON('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id)', { headers: authHdr() });
-    if (ex.files && ex.files.length) return; // already backed up today
-    const boundary = 'htb' + Date.now();
-    const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
-      JSON.stringify({ name, parents: [bId] }) +
-      '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + JSON.stringify(data) +
-      '\r\n--' + boundary + '--';
-    await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
-      { method: 'POST', headers: authHdr({ 'Content-Type': 'multipart/related; boundary=' + boundary }), body });
+    const ex = await driveJSON('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id,size)', { headers: authHdr() });
+    const existing = ex.files && ex.files[0];
+
+    if (existing) {
+      if (Number(existing.size || 0) > payload.length) return; // don't shrink today's snapshot
+      await fetch('https://www.googleapis.com/upload/drive/v3/files/' + existing.id + '?uploadType=media',
+        { method: 'PATCH', headers: authHdr({ 'Content-Type': 'application/json' }), body: payload });
+    } else {
+      const boundary = 'htb' + Date.now();
+      const body = '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
+        JSON.stringify({ name, parents: [bId] }) +
+        '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' + payload +
+        '\r\n--' + boundary + '--';
+      await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+        { method: 'POST', headers: authHdr({ 'Content-Type': 'multipart/related; boundary=' + boundary }), body });
+    }
     // prune
     const lq = encodeURIComponent("name contains 'health-data-backup-' and '" + bId + "' in parents and trashed=false");
     const lj = await driveJSON('https://www.googleapis.com/drive/v3/files?q=' + lq + '&fields=files(id,name)&orderBy=name desc', { headers: authHdr() });

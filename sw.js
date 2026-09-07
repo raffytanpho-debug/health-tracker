@@ -10,7 +10,7 @@
  * Bump CACHE on every deploy. Expect 2-3 cold opens before a new worker installs
  * and repopulates.
  */
-const CACHE = 'health-tracker-v3';
+const CACHE = 'health-tracker-v4';
 
 // index.html is deliberately NOT precached here. The fetch handler keeps a fresh
 // copy on every successful load, so an online user never gets stale code while an
